@@ -15,7 +15,7 @@ fi
 
 echo "[vendor] cloning $UPSTREAM_URL @ $UPSTREAM_REV ..."
 git clone "$UPSTREAM_URL" "$VENDOR_DIR"
-git -C "$VENDOR_DIR" checkout "$UPSTREAM_REV"
+git -c advice.detachedHead=false -C "$VENDOR_DIR" checkout "$UPSTREAM_REV"
 
 echo "[vendor] applying patches ..."
 git -C "$VENDOR_DIR" apply "$PATCH_FILE"
