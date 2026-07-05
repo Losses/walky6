@@ -1,0 +1,30 @@
+{
+  "name": "walking-viewer",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "bash scripts/vendor.sh && cargo build --release",
+    "dev": "bash scripts/vendor.sh && cargo build --release && bun run index.ts",
+    "build:perry": "npx -y @perryts/perry compile perryts_app.ts -o sneaker-reader",
+    "start": "bun run build && ./target/release/sneakerweb-wrapper launch"
+  },
+  "perry": {
+    "permissions": [
+      "net:fetch",
+      "net:connect"
+    ]
+  },
+  "dependencies": {
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}
