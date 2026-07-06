@@ -1,5 +1,5 @@
 {
-  description = "Walking Viewer - Sneakerweb drop reader based on PerryTS";
+  description = "walky6 - Tauri-based sneakerweb browser";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
@@ -14,17 +14,62 @@
       packages = forAllSystems (system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
+
+          sneakerwebSrc = builtins.fetchGit {
+            url = "https://codeberg.org/worm-blossom/sneakerweb";
+            ref = "main";
+            rev = "888cf132207a2bf0622a5633a2d347e9e910538c";
+          };
+
+          vendorSneakerweb = pkgs.stdenv.mkDerivation {
+            name = "sneakerweb-vendor";
+            src = sneakerwebSrc;
+            patches = [ ./patches/sneakerweb.patch ];
+            installPhase = ''
+              mkdir -p $out/sneakerweb
+              cp -r . $out/sneakerweb/
+            '';
+          };
         in
         {
           default = pkgs.rustPlatform.buildRustPackage {
-            pname = "sneakerweb-wrapper";
+            pname = "walky6";
             version = "1.0.0";
-            src = ./.;
+            src = pkgs.lib.cleanSourceWith {
+              src = ./.;
+              filter = path: type:
+                let
+                  relPath = pkgs.lib.removePrefix (toString ./. + "/") (toString path);
+                in
+                  pkgs.lib.cleanSourceFilter path type ||
+                  pkgs.lib.hasPrefix "walky6/" relPath ||
+                  relPath == "walky6";
+            };
             cargoLock = {
               lockFile = ./Cargo.lock;
             };
             nativeBuildInputs = [ pkgs.pkg-config ];
-            buildInputs = [ ];
+            buildInputs = [
+              pkgs.dbus
+              pkgs.gtk3
+              pkgs.webkitgtk_4_1
+              pkgs.libsoup_3
+              pkgs.glib
+              pkgs.cairo
+              pkgs.pango
+              pkgs.harfbuzz
+              pkgs.gdk-pixbuf
+              pkgs.graphene
+              pkgs.libpulseaudio
+              pkgs.gst_all_1.gstreamer
+              pkgs.gst_all_1.gst-plugins-base
+              pkgs.gsettings-desktop-schemas
+            ];
+            preBuild = ''
+              echo "Setting up vendored sneakerweb..."
+              mkdir -p vendor
+              cp -r ${vendorSneakerweb}/sneakerweb vendor/sneakerweb
+            '';
             doCheck = false;
           };
         }
@@ -37,32 +82,32 @@
         {
           default = pkgs.mkShell {
             buildInputs = [
+              pkgs.dbus
               pkgs.cargo
               pkgs.rustc
               pkgs.bun
               pkgs.pkg-config
               pkgs.clang
               pkgs.llvm
-              pkgs.gtk4
-              pkgs.webkitgtk_6_0
-              pkgs.libshumate
+              pkgs.gtk3
+              pkgs.webkitgtk_4_1
+              pkgs.libsoup_3
+              pkgs.glib
+              pkgs.cairo
+              pkgs.pango
               pkgs.harfbuzz
               pkgs.gdk-pixbuf
               pkgs.graphene
               pkgs.libpulseaudio
               pkgs.gst_all_1.gstreamer
               pkgs.gst_all_1.gst-plugins-base
-              pkgs.libsoup_3
-              pkgs.glib
               pkgs.gsettings-desktop-schemas
             ];
 
             shellHook = ''
-              echo "Welcome to walking-viewer dev environment!"
-              echo "Rust, Bun, and GUI libraries loaded."
-              # Compile HTTP stubs to a static library to satisfy PerryTS stdlib dependencies
-              gcc -c stubs.c -o stubs.o 2>/dev/null && ar rcs libstubs.a stubs.o 2>/dev/null
-              export NIX_LDFLAGS="-L$PWD -lstubs $NIX_LDFLAGS"
+              echo "Welcome to walky6 dev environment!"
+              echo "Rust, Bun, and Tauri GUI libraries loaded."
+              echo ""
               if [ -z "$XDG_DATA_DIRS" ]; then
                 export XDG_DATA_DIRS="$GSETTINGS_SCHEMAS_PATH"
               else

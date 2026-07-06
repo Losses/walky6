@@ -2,5 +2,6 @@
 resolver = "3"
 members = [
     "vendor/sneakerweb",
-    "sneakerweb-wrapper"
+    "walky6",
+    "walky6/src-tauri"
 ]

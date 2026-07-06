@@ -33,9 +33,15 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 # Finder (MacOS) folder config
 .DS_Store
 
+# sneakerweb data
 .sneakerweb_store
+
+# build artifacts
 target
 vendor
 *.o
 *.a
-sneaker-reader
+
+# Tauri
+walky6/src-tauri/gen
+result/*

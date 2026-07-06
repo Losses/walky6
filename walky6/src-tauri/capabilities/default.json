@@ -1,0 +1,13 @@
+{
+  "identifier": "default",
+  "description": "Default capability for walky6",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "dialog:allow-open",
+    "core:event:default",
+    "core:event:allow-emit",
+    "core:event:allow-listen"
+  ]
+}

@@ -1,5 +1,5 @@
 diff --git a/src/import.rs b/src/import.rs
-index 516aa52..c2056b8 100644
+index 516aa52..26ea58c 100644
 --- a/src/import.rs
 +++ b/src/import.rs
 @@ -4,7 +4,7 @@ use smol::{
@@ -11,7 +11,7 @@ index 516aa52..c2056b8 100644
  use ufotofu::{
      ExpectedFinalError, ProduceAtLeastError,
      codec::{Blame, DecodeError},
-@@ -25,23 +25,62 @@ use crate::util::{SNEAKERWEB_NAMESPACE_ID_BYTES, domain_style, get_domain, hmm,
+@@ -25,23 +25,44 @@ use crate::util::{SNEAKERWEB_NAMESPACE_ID_BYTES, domain_style, get_domain, hmm,
  
  #[derive(Args)]
  pub struct ImportArgs {
@@ -51,24 +51,6 @@ index 516aa52..c2056b8 100644
 +            total_bytes: Arc::new(AtomicU64::new(0)),
 +        }
 +    }
-+
-+    pub fn phase_name(&self) -> &'static str {
-+        match self.phase.load(Ordering::Relaxed) {
-+            PHASE_IDLE => "idle",
-+            PHASE_DECODING => "decoding",
-+            PHASE_IMPORTING => "importing",
-+            PHASE_DONE => "done",
-+            _ => "unknown",
-+        }
-+    }
-+
-+    pub fn fraction(&self) -> f64 {
-+        let total = self.total_bytes.load(Ordering::Relaxed);
-+        if total == 0 {
-+            return 0.0;
-+        }
-+        (self.processed_bytes.load(Ordering::Relaxed) as f64) / (total as f64)
-+    }
 +}
 +
 +pub async fn import_sneak(args: &ImportArgs, progress: &ProgressHandle) -> Result<()> {
@@ -79,7 +61,7 @@ index 516aa52..c2056b8 100644
      let drop_producer = reader_to_bulk_producer(file, new_unbounded_elastic());
      let sneakerweb_fs_path = sneakerweb_dir().await?;
      let namespace_id = NamespaceId::from_bytes(&SNEAKERWEB_NAMESPACE_ID_BYTES);
-@@ -86,6 +125,8 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
+@@ -86,6 +107,8 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
  
      let mut skipped = BTreeSet::new();
  
@@ -88,7 +70,7 @@ index 516aa52..c2056b8 100644
      let mut filtering_decoder =
          ClosureProducer::<_, (DropSliceMetadata, SliceStreamProducer<_>), (), Error>::new(
              async || {
-@@ -96,14 +137,19 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
+@@ -96,14 +119,19 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
                          return Ok(Right(()));
                      };
  
@@ -109,7 +91,7 @@ index 516aa52..c2056b8 100644
                                      return Ok(Left((metadata, slice_stream)));
                                  }
                                  skip_reason = "unfamiliar";
-@@ -121,9 +167,10 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
+@@ -121,9 +149,10 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
  
                      skipped.insert(domain_id.clone());
  
@@ -121,7 +103,7 @@ index 516aa52..c2056b8 100644
                                  "an entry in the .snk file was too large for this device",
                              )?,
                          )
-@@ -132,6 +179,7 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
+@@ -132,6 +161,7 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
                              Ok(()) => anyhow!("unexpected end of .snk file"),
                              Err(err) => map_decode_err(err),
                          })?;
@@ -129,7 +111,7 @@ index 516aa52..c2056b8 100644
                      slice_stream
                          .produce_final()
                          .await
-@@ -145,6 +193,8 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
+@@ -145,6 +175,8 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
              },
          );
  
@@ -138,7 +120,7 @@ index 516aa52..c2056b8 100644
      import_drop(&mut store, &mut filtering_decoder, true)
          .await
          .map_err(|err| match err {
-@@ -169,7 +219,11 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
+@@ -169,7 +201,11 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
          })?;
  
      match store.flush().await {
