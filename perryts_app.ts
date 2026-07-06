@@ -18,13 +18,11 @@ import { readFileSync } from "fs";
 import { spawn } from "child_process";
 
 let sneakerwebPort = "8080";
-let progressFile = "/tmp/walking-viewer-import-progress";
 
 try {
   const raw = readFileSync("/tmp/walking-viewer-session", "utf8").trim();
   const session = JSON.parse(raw);
   if (session.sneakerwebPort) sneakerwebPort = String(session.sneakerwebPort);
-  if (session.progressFile) progressFile = String(session.progressFile);
 } catch (e) {}
 
 const homeUrl = `http://sneakerweb.localhost:${sneakerwebPort}`;
@@ -34,7 +32,6 @@ const statusText = State("Done");
 const isLoading = State(false);
 const canGoBackState = State(false);
 const progressText = State("");
-const progressVisible = State(false);
 
 function formatProgress(progress: any): string {
   const { phase, processed, total, message } = progress;
@@ -52,15 +49,6 @@ function formatProgress(progress: any): string {
   const empty = 30 - filled;
   const bar = "\u2588".repeat(filled) + "\u2591".repeat(empty);
   return `[${bar}] ${pct}% ${message || phase}`;
-}
-
-function readProgress(): any | null {
-  try {
-    const raw = readFileSync(progressFile, "utf8").trim();
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
 }
 
 const wv = WebView({
@@ -92,45 +80,39 @@ function handleImport() {
   console.log("[handleImport] Spawning pick-and-import subprocess...");
   statusText.set("Opening file dialog...");
   isLoading.set(true);
-  progressVisible.set(true);
   progressText.set("Waiting for file selection...");
-
-  let pollInterval: ReturnType<typeof setInterval> | null = null;
 
   const wrapperPath = "./target/release/sneakerweb-wrapper";
   const proc = spawn(wrapperPath, ["pick-and-import"], {
     env: {
       ...process.env,
-      SNEAKERWEB_DIR: "./.sneakerweb_store",
-      IMPORT_PROGRESS_FILE: progressFile
+      SNEAKERWEB_DIR: "./.sneakerweb_store"
     }
   });
 
-  let stdout = "";
   let stderr = "";
+  let stdoutBuf = "";
 
   proc.stdout.on("data", (data) => {
-    stdout += data.toString();
+    stdoutBuf += data.toString();
+    const lines = stdoutBuf.split("\n");
+    stdoutBuf = lines.pop() || "";
+    for (const line of lines) {
+      if (line.startsWith('{"phase":')) {
+        try {
+          const progress = JSON.parse(line);
+          const text = formatProgress(progress);
+          if (text) progressText.set(text);
+        } catch {}
+      }
+    }
   });
 
   proc.stderr.on("data", (data) => {
     stderr += data.toString();
   });
 
-  pollInterval = setInterval(() => {
-    const progress = readProgress();
-    if (progress) {
-      const text = formatProgress(progress);
-      if (text) progressText.set(text);
-      if (progress.phase === "done") {
-        if (pollInterval) clearInterval(pollInterval);
-        pollInterval = null;
-      }
-    }
-  }, 200);
-
   proc.on("close", (code) => {
-    if (pollInterval) clearInterval(pollInterval);
     if (code === 0) {
       statusText.set("Successfully imported!");
       progressText.set("Import complete!");
@@ -139,7 +121,6 @@ function handleImport() {
     } else if (stderr.includes("cancelled")) {
       statusText.set("Done");
       progressText.set("");
-      progressVisible.set(false);
     } else {
       statusText.set(`Import failed: ${stderr.trim() || "unknown error"}`);
       progressText.set("Import failed");
@@ -149,10 +130,8 @@ function handleImport() {
   });
 
   proc.on("error", (err) => {
-    if (pollInterval) clearInterval(pollInterval);
     statusText.set(`Error: ${err.message}`);
     progressText.set("Import error");
-    progressVisible.set(false);
     alert({ title: "Error", message: `Failed to spawn file picker: ${err.message}` });
     isLoading.set(false);
   });

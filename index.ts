@@ -4,8 +4,6 @@ import { join } from "path";
 import { createServer } from "net";
 import { randomUUID } from "crypto";
 
-const PROGRESS_FILE = "/tmp/walking-viewer-import-progress";
-
 let PORT = 3000;
 
 const sessionId = randomUUID();
@@ -17,7 +15,6 @@ if (!existsSync(SNEAKERWEB_DIR)) {
   mkdirSync(SNEAKERWEB_DIR, { recursive: true });
 }
 
-// Dynamic Port Selection for Bun server
 function getFreePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const server = createServer();
@@ -38,7 +35,51 @@ try {
 let sneakerwebPort = 8080;
 let sneakerwebProcess: ReturnType<typeof spawn> | null = null;
 
-// Start sneakerweb serve — let the wrapper choose the port
+let importProgress = { phase: "idle", processed: 0, total: 0, message: "" };
+
+function spawnImport(filePath: string): Promise<{ success: boolean; error?: string }> {
+  return new Promise((resolve) => {
+    const proc = spawn("./target/release/sneakerweb-wrapper", ["import", filePath], {
+      env: {
+        ...process.env,
+        SNEAKERWEB_DIR: SNEAKERWEB_DIR
+      }
+    });
+
+    let stderr = "";
+    let stdoutBuf = "";
+
+    proc.stdout.on("data", (data) => {
+      stdoutBuf += data.toString();
+      const lines = stdoutBuf.split("\n");
+      stdoutBuf = lines.pop() || "";
+      for (const line of lines) {
+        if (line.startsWith('{"phase":')) {
+          try {
+            importProgress = JSON.parse(line);
+          } catch {}
+        }
+      }
+    });
+
+    proc.stderr.on("data", (data) => {
+      stderr += data.toString();
+    });
+
+    proc.on("close", (code) => {
+      if (code === 0) {
+        resolve({ success: true });
+      } else {
+        resolve({ success: false, error: stderr.trim() || "Import failed" });
+      }
+    });
+
+    proc.on("error", (err) => {
+      resolve({ success: false, error: err.message });
+    });
+  });
+}
+
 async function startSneakerweb() {
   const wrapperPath = join(import.meta.dir, "target", "release", "sneakerweb-wrapper");
   if (!existsSync(wrapperPath)) {
@@ -67,10 +108,9 @@ async function startSneakerweb() {
     await new Promise(r => setTimeout(r, 100));
     if (existsSync(portFilePath)) {
       try {
-    sneakerwebPort = parseInt(readFileSync(portFilePath, "utf8").trim(), 10);
-    // Update session file with actual sneakerweb port
-    writeFileSync("/tmp/walking-viewer-session", JSON.stringify({ uuid: sessionId, sneakerwebPort, apiPort: PORT }));
-    console.log(`Sneakerweb server port: ${sneakerwebPort}`);
+        sneakerwebPort = parseInt(readFileSync(portFilePath, "utf8").trim(), 10);
+        writeFileSync("/tmp/walking-viewer-session", JSON.stringify({ uuid: sessionId, sneakerwebPort, apiPort: PORT }));
+        console.log(`Sneakerweb server port: ${sneakerwebPort}`);
         return;
       } catch (e) {}
     }
@@ -80,7 +120,6 @@ async function startSneakerweb() {
 
 await startSneakerweb();
 
-// Clean up server on exit
 function cleanup() {
   if (sneakerwebProcess) {
     sneakerwebProcess.kill();
@@ -96,7 +135,6 @@ Bun.serve({
   async fetch(req) {
     const url = new URL(req.url);
 
-    // API: Import .snk file
     if (url.pathname === "/api/import" && req.method === "POST") {
       try {
         const contentType = req.headers.get("content-type") || "";
@@ -123,37 +161,21 @@ Bun.serve({
         const tempPath = join(tempDir, `upload_${Date.now()}.snk`);
         writeFileSync(tempPath, Buffer.from(buffer));
 
-        // Execute sneakerweb import with SNEAKERWEB_DIR environment variable
-        return new Promise<Response>((resolve) => {
-          const proc = spawn("./target/release/sneakerweb-wrapper", ["import", tempPath], {
-            env: {
-              ...process.env,
-              SNEAKERWEB_DIR: SNEAKERWEB_DIR,
-              IMPORT_PROGRESS_FILE: PROGRESS_FILE
-            }
-          });
-          let stderr = "";
-          proc.stderr.on("data", (data) => {
-            stderr += data.toString();
-          });
-          proc.on("close", (code) => {
-            // Clean up temp file
-            try {
-              Bun.file(tempPath).delete();
-            } catch (e) {}
+        importProgress = { phase: "decoding", processed: 0, total: 0, message: "Starting..." };
+        const result = await spawnImport(tempPath);
 
-            if (code === 0) {
-              resolve(new Response(JSON.stringify({ success: true }), {
-                headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
-              }));
-            } else {
-              resolve(new Response(JSON.stringify({ error: stderr.trim() || "Import failed" }), {
-                status: 500,
-                headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
-              }));
-            }
+        try { Bun.file(tempPath).delete(); } catch (e) {}
+
+        if (result.success) {
+          return new Response(JSON.stringify({ success: true }), {
+            headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
           });
-        });
+        } else {
+          return new Response(JSON.stringify({ error: result.error }), {
+            status: 500,
+            headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
+          });
+        }
       } catch (err: unknown) {
         return new Response(JSON.stringify({ error: String(err) }), {
           status: 500,
@@ -162,7 +184,6 @@ Bun.serve({
       }
     }
 
-    // API: Import .snk file by local file path (for native client)
     if (url.pathname === "/api/import-path" && req.method === "POST") {
       try {
         const body = await req.json();
@@ -174,32 +195,19 @@ Bun.serve({
           });
         }
 
-        // Execute sneakerweb-wrapper import
-        return new Promise<Response>((resolve) => {
-          const proc = spawn("./target/release/sneakerweb-wrapper", ["import", filePath], {
-            env: {
-              ...process.env,
-              SNEAKERWEB_DIR: SNEAKERWEB_DIR,
-              IMPORT_PROGRESS_FILE: PROGRESS_FILE
-            }
+        importProgress = { phase: "decoding", processed: 0, total: 0, message: "Starting..." };
+        const result = await spawnImport(filePath);
+
+        if (result.success) {
+          return new Response(JSON.stringify({ success: true }), {
+            headers: { "Content-Type": "application/json" }
           });
-          let stderr = "";
-          proc.stderr.on("data", (data) => {
-            stderr += data.toString();
+        } else {
+          return new Response(JSON.stringify({ error: result.error }), {
+            status: 500,
+            headers: { "Content-Type": "application/json" }
           });
-          proc.on("close", (code) => {
-            if (code === 0) {
-              resolve(new Response(JSON.stringify({ success: true }), {
-                headers: { "Content-Type": "application/json" }
-              }));
-            } else {
-              resolve(new Response(JSON.stringify({ error: stderr.trim() || "Import failed" }), {
-                status: 500,
-                headers: { "Content-Type": "application/json" }
-              }));
-            }
-          });
-        });
+        }
       } catch (err: unknown) {
         return new Response(JSON.stringify({ error: String(err) }), {
           status: 500,
@@ -208,23 +216,12 @@ Bun.serve({
       }
     }
 
-
-
-    // API: Import progress
     if (url.pathname === "/api/import-progress" && req.method === "GET") {
-      try {
-        const content = readFileSync(PROGRESS_FILE, "utf8").trim();
-        return new Response(content, {
-          headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
-        });
-      } catch {
-        return new Response(JSON.stringify({ phase: "idle", processed: 0, total: 0, message: "" }), {
-          headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
-        });
-      }
+      return new Response(JSON.stringify(importProgress), {
+        headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
+      });
     }
 
-    // API: Get List of Sites/Domains
     if (url.pathname === "/api/sites" && req.method === "GET") {
       try {
         const response = await fetch(`http://127.0.0.1:${sneakerwebPort}/`, {
@@ -244,7 +241,6 @@ Bun.serve({
       }
     }
 
-    // Proxy requests to local sneakerweb server (dynamic port)
     if (url.pathname.startsWith("/proxy/")) {
       const match = url.pathname.match(/^\/proxy\/([^\/]+)(.*)$/);
       if (match) {
@@ -261,9 +257,7 @@ Bun.serve({
           });
 
           const resHeaders = new Headers(response.headers);
-          // Allow cross-origin inside our sandbox iframe
           resHeaders.set("Access-Control-Allow-Origin", "*");
-          // Remove problematic compression headers so Bun can stream the response
           resHeaders.delete("content-encoding");
 
           const contentType = response.headers.get("content-type") || "";
@@ -273,8 +267,6 @@ Bun.serve({
           if (isHtml) {
             let htmlText = await response.text();
             
-            // Rewrite any http://<domain>.localhost:<port>/path to /proxy/<domain>/path
-            // Also handle sneakerweb.localhost
             htmlText = htmlText.replace(
               /http:\/\/(sneakerweb|[a-f0-9]{64})\.localhost(?::\d+)?(\/[^"' >]*)?/g,
               (match, domain, path) => {
@@ -300,7 +292,6 @@ Bun.serve({
       }
     }
 
-    // Proxy root / directly to sneakerweb portal homepage with URL rewriting
     if (url.pathname === "/") {
       const targetUrl = `http://127.0.0.1:${sneakerwebPort}/`;
       try {
@@ -315,8 +306,6 @@ Bun.serve({
 
         let htmlText = await response.text();
 
-        // Rewrite any http://<domain>.localhost:<port>/path to /proxy/<domain>/path
-        // Also handle sneakerweb.localhost
         htmlText = htmlText.replace(
           /http:\/\/(sneakerweb|[a-f0-9]{64})\.localhost(?::\d+)?(\/[^"' >]*)?/g,
           (match, domain, path) => {

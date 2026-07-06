@@ -2,11 +2,11 @@ use clap::{Parser, Subcommand};
 use smol::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use smol::net::{TcpListener, TcpStream};
 use smol::stream::StreamExt;
+use std::io::{BufRead, BufReader as StdBufReader};
 use std::net::TcpListener as StdTcpListener;
 use std::path::PathBuf;
-use std::process::Command;
-
-const PROGRESS_FILE_PATH: &str = "/tmp/walking-viewer-import-progress";
+use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
 
 #[derive(Parser)]
 #[command(version = "1.0.0", about = "Isolated wrapper for sneakerweb")]
@@ -35,6 +35,14 @@ enum WrapperCommands {
     Launch,
     FileDialog,
     PickAndImport,
+}
+
+type ProgressState = Arc<Mutex<String>>;
+
+fn new_progress_state() -> ProgressState {
+    Arc::new(Mutex::new(
+        r#"{"phase":"idle","processed":0,"total":0,"message":""}"#.to_string(),
+    ))
 }
 
 fn get_free_port() -> u16 {
@@ -85,7 +93,59 @@ fn find_browser(cli_browser: Option<PathBuf>) -> Option<PathBuf> {
     None
 }
 
-async fn handle_import_api(mut stream: TcpStream, wrapper_path: PathBuf, sneakerweb_dir: PathBuf) {
+fn progress_json(handle: &sneakerweb::import::ProgressHandle) -> String {
+    use std::sync::atomic::Ordering;
+    let phase = handle.phase_name();
+    let processed = handle.processed_bytes.load(Ordering::Relaxed);
+    let total = handle.total_bytes.load(Ordering::Relaxed);
+    let message = match phase {
+        "decoding" => "Decoding entries...",
+        "importing" => "Importing entries...",
+        "done" => "Import complete",
+        _ => "",
+    };
+    format!(
+        r#"{{"phase":"{}","processed":{},"total":{},"message":"{}"}}"#,
+        phase, processed, total, message
+    )
+}
+
+fn spawn_import_with_progress(
+    wrapper_path: &PathBuf,
+    import_path: &str,
+    sneakerweb_dir: &PathBuf,
+    progress_state: &ProgressState,
+) -> std::process::ExitStatus {
+    let mut child = Command::new(wrapper_path)
+        .arg("import")
+        .arg(import_path)
+        .env("SNEAKERWEB_DIR", sneakerweb_dir)
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn import");
+
+    let stdout = child.stdout.take().unwrap();
+    let state = progress_state.clone();
+    std::thread::spawn(move || {
+        let reader = StdBufReader::new(stdout);
+        for line in reader.lines().flatten() {
+            if line.starts_with("{\"phase\":") {
+                if let Ok(mut s) = state.lock() {
+                    *s = line;
+                }
+            }
+        }
+    });
+
+    child.wait().expect("failed to wait on import")
+}
+
+async fn handle_import_api(
+    mut stream: TcpStream,
+    wrapper_path: PathBuf,
+    sneakerweb_dir: PathBuf,
+    progress_state: ProgressState,
+) {
     let mut buf_reader = BufReader::new(stream.clone());
     let _ = buf_reader.fill_buf().await;
     let buf = buf_reader.buffer().to_vec();
@@ -97,18 +157,18 @@ async fn handle_import_api(mut stream: TcpStream, wrapper_path: PathBuf, sneaker
 
     if parts.len() >= 2 && parts[0] == "POST" && parts[1] == "/pick-file" {
         eprintln!("[pick-file] Spawning file dialog subprocess...");
-        
+
         let output = Command::new(&wrapper_path)
             .arg("file-dialog")
             .env("SNEAKERWEB_DIR", &sneakerweb_dir)
             .output();
-        
+
         let resp = match output {
             Ok(output) => {
                 if output.status.success() {
                     let file_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
                     eprintln!("[pick-file] File selected: {}", file_path);
-                    
+
                     let path = PathBuf::from(&file_path);
                     match std::fs::read(&path) {
                         Ok(data) => {
@@ -117,20 +177,14 @@ async fn handle_import_api(mut stream: TcpStream, wrapper_path: PathBuf, sneaker
                                 format!("HTTP/1.1 500 ERROR\r\nContent-Type: application/json\r\n\r\n{{\"error\":\"failed to save temp file: {}\"}}", e)
                             } else {
                                 let tmp_path = tmp.to_string_lossy().to_string();
-                                let status = Command::new(&wrapper_path)
-                                    .arg("import")
-                                    .arg(&tmp_path)
-                                    .env("SNEAKERWEB_DIR", &sneakerweb_dir)
-                                    .env("IMPORT_PROGRESS_FILE", PROGRESS_FILE_PATH)
-                                    .status()
-                                    .map(|s| s.success());
-
+                                let status = spawn_import_with_progress(
+                                    &wrapper_path, &tmp_path, &sneakerweb_dir, &progress_state,
+                                );
                                 let _ = std::fs::remove_file(&tmp);
 
-                                match status {
-                                    Ok(true) => "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n\r\n{\"success\":true}".to_string(),
-                                    Ok(false) => "HTTP/1.1 500 ERROR\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n\r\n{\"error\":\"import failed\"}".to_string(),
-                                    Err(e) => format!("HTTP/1.1 500 ERROR\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n\r\n{{\"error\":\"{}\"}}", e),
+                                match status.success() {
+                                    true => "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n\r\n{\"success\":true}".to_string(),
+                                    false => "HTTP/1.1 500 ERROR\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n\r\n{\"error\":\"import failed\"}".to_string(),
                                 }
                             }
                         }
@@ -148,7 +202,6 @@ async fn handle_import_api(mut stream: TcpStream, wrapper_path: PathBuf, sneaker
         };
         let _ = stream.write_all(resp.as_bytes()).await;
     } else if parts.len() >= 2 && parts[0] == "POST" && parts[1] == "/api/import" {
-        // Read Content-Length
         let content_length: usize = lines.iter()
             .find(|l| l.to_lowercase().starts_with("content-length:"))
             .and_then(|l| l.split(':').nth(1))
@@ -162,7 +215,6 @@ async fn handle_import_api(mut stream: TcpStream, wrapper_path: PathBuf, sneaker
             return;
         }
 
-        // Read the body
         let body_start = req_str.find("\r\n\r\n").map(|i| i + 4).unwrap_or(0);
         let mut body = buf[body_start..].to_vec();
         while body.len() < content_length {
@@ -174,7 +226,6 @@ async fn handle_import_api(mut stream: TcpStream, wrapper_path: PathBuf, sneaker
         }
         body.truncate(content_length);
 
-        // Save to temp file
         let tmp = std::env::temp_dir().join(format!("sneakerweb-import-{}.snk", random_uuid()));
         if std::fs::write(&tmp, &body).is_err() {
             let _ = stream.write_all(
@@ -184,19 +235,14 @@ async fn handle_import_api(mut stream: TcpStream, wrapper_path: PathBuf, sneaker
         }
 
         let tmp_path = tmp.to_string_lossy().to_string();
-        let status = Command::new(&wrapper_path)
-            .arg("import")
-            .arg(&tmp_path)
-            .env("SNEAKERWEB_DIR", &sneakerweb_dir)
-            .env("IMPORT_PROGRESS_FILE", PROGRESS_FILE_PATH)
-            .status()
-            .map(|s| s.success());
-
+        let status = spawn_import_with_progress(
+            &wrapper_path, &tmp_path, &sneakerweb_dir, &progress_state,
+        );
         let _ = std::fs::remove_file(&tmp);
 
-        let resp = match status {
-            Ok(true) => "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n\r\n{\"success\":true}",
-            _ => "HTTP/1.1 500 ERROR\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n\r\n{\"error\":\"import failed\"}",
+        let resp = match status.success() {
+            true => "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n\r\n{\"success\":true}",
+            false => "HTTP/1.1 500 ERROR\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n\r\n{\"error\":\"import failed\"}",
         };
         let _ = stream.write_all(resp.as_bytes()).await;
     } else if parts.len() >= 2 && parts[0] == "POST" && parts[1] == "/api/import-path" {
@@ -217,24 +263,19 @@ async fn handle_import_api(mut stream: TcpStream, wrapper_path: PathBuf, sneaker
             return;
         }
 
-        let status = Command::new(&wrapper_path)
-            .arg("import")
-            .arg(&file_path)
-            .env("SNEAKERWEB_DIR", &sneakerweb_dir)
-            .env("IMPORT_PROGRESS_FILE", PROGRESS_FILE_PATH)
-            .status()
-            .map(|s| s.success());
+        let status = spawn_import_with_progress(
+            &wrapper_path, &file_path, &sneakerweb_dir, &progress_state,
+        );
 
-        let resp = match status {
-            Ok(true) => "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n\r\n{\"success\":true}",
-            _ => "HTTP/1.1 500 ERROR\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n\r\n{\"error\":\"import failed\"}",
+        let resp = match status.success() {
+            true => "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n\r\n{\"success\":true}",
+            false => "HTTP/1.1 500 ERROR\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n\r\n{\"error\":\"import failed\"}",
         };
         let _ = stream.write_all(resp.as_bytes()).await;
     } else if parts.len() >= 2 && parts[0] == "GET" && parts[1] == "/api/import-progress" {
-        let body = match std::fs::read_to_string(PROGRESS_FILE_PATH) {
-            Ok(content) => content,
-            Err(_) => "{\"phase\":\"idle\",\"processed\":0,\"total\":0,\"message\":\"\"}".to_string(),
-        };
+        let body = progress_state.lock()
+            .map(|s| s.clone())
+            .unwrap_or_else(|_| r#"{"phase":"idle","processed":0,"total":0,"message":""}"#.to_string());
         let resp = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n\r\n{}",
             body
@@ -249,12 +290,15 @@ async fn handle_import_api(mut stream: TcpStream, wrapper_path: PathBuf, sneaker
     }
 }
 
-async fn run_import_api_server(port: u16, wrapper_path: PathBuf, sneakerweb_dir: PathBuf) {
+async fn run_import_api_server(port: u16, wrapper_path: PathBuf, sneakerweb_dir: PathBuf, progress_state: ProgressState) {
     let listener = TcpListener::bind(format!("127.0.0.1:{port}")).await;
     let Ok(listener) = listener else { return };
     let mut incoming = listener.incoming();
     while let Some(Ok(stream)) = incoming.next().await {
-        smol::spawn(handle_import_api(stream, wrapper_path.clone(), sneakerweb_dir.clone())).detach();
+        let wp = wrapper_path.clone();
+        let sd = sneakerweb_dir.clone();
+        let ps = progress_state.clone();
+        smol::spawn(handle_import_api(stream, wp, sd, ps)).detach();
     }
 }
 
@@ -281,21 +325,19 @@ fn main() -> anyhow::Result<()> {
             let api_port = get_free_port();
             let sneakerweb_port = get_free_port();
 
-            // Single session file with all info
             let session_json = format!(
-                r#"{{"uuid":"{uuid}","sneakerwebPort":{sneakerweb_port},"apiPort":{api_port},"progressFile":"{progress_file}"}}"#,
-                progress_file = PROGRESS_FILE_PATH
+                r#"{{"uuid":"{uuid}","sneakerwebPort":{sneakerweb_port},"apiPort":{api_port}}}"#
             );
             std::fs::write("/tmp/walking-viewer-session", &session_json)?;
 
-            // Start import API in background
+            let progress_state = new_progress_state();
             let api_dir = sneakerweb_dir.clone();
             let api_wrapper = wrapper_path.clone();
+            let api_ps = progress_state.clone();
             std::thread::spawn(move || {
-                smol::block_on(run_import_api_server(api_port, api_wrapper, api_dir));
+                smol::block_on(run_import_api_server(api_port, api_wrapper, api_dir, api_ps));
             });
 
-            // Start sneakerweb serve with pre-selected port
             let mut serve_child = Command::new(&wrapper_path)
                 .arg("serve")
                 .arg("--port")
@@ -303,17 +345,14 @@ fn main() -> anyhow::Result<()> {
                 .env("SNEAKERWEB_DIR", &sneakerweb_dir)
                 .spawn()?;
 
-            // Give serve a moment to bind
             std::thread::sleep(std::time::Duration::from_millis(500));
 
-            // Launch browser
             let browser_path = find_browser(cli.browser)
                 .ok_or_else(|| anyhow::anyhow!("sneaker-reader not found. Build with: npx -y @perryts/perry compile perryts_app.ts -o sneaker-reader"))?;
             eprintln!("Launching browser: {}", browser_path.display());
             let mut browser_child = Command::new(&browser_path).spawn()?;
             browser_child.wait()?;
 
-            // Cleanup
             eprintln!("Shutting down...");
             let _ = serve_child.kill();
             let _ = serve_child.wait();
@@ -338,12 +377,30 @@ fn main() -> anyhow::Result<()> {
                 Some("familiar") => Some(sneakerweb::import::ImportMode::Familiar),
                 _ => None,
             };
-            if std::env::var("IMPORT_PROGRESS_FILE").is_err() {
-                unsafe { std::env::set_var("IMPORT_PROGRESS_FILE", PROGRESS_FILE_PATH); }
-            }
-            smol::block_on(async {
-                sneakerweb::import::import_sneak(&sneakerweb::import::ImportArgs { src, mode: import_mode }).await
-            })?;
+            let args = sneakerweb::import::ImportArgs { src, mode: import_mode };
+            let handle = sneakerweb::import::ProgressHandle::new();
+
+            let poller_handle = handle.clone();
+            let poller = std::thread::spawn(move || {
+                use std::io::Write;
+                loop {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    let phase = poller_handle.phase.load(std::sync::atomic::Ordering::Relaxed);
+                    if phase == sneakerweb::import::PHASE_DONE {
+                        let json = progress_json(&poller_handle);
+                        println!("{}", json);
+                        let _ = std::io::stdout().flush();
+                        break;
+                    }
+                    let json = progress_json(&poller_handle);
+                    println!("{}", json);
+                    let _ = std::io::stdout().flush();
+                }
+            });
+
+            let result = smol::block_on(sneakerweb::import::import_sneak(&args, &handle));
+            let _ = poller.join();
+            result?;
         }
         WrapperCommands::Export { dest, collection } => {
             smol::block_on(async {
@@ -383,7 +440,7 @@ fn main() -> anyhow::Result<()> {
                 .add_filter("Sneaker files", &["snk"])
                 .set_title("Import .snk file")
                 .pick_file();
-            
+
             match file {
                 Some(path) => {
                     match std::fs::read(&path) {
@@ -393,29 +450,41 @@ fn main() -> anyhow::Result<()> {
                                 eprintln!("Failed to save temp file: {}", e);
                                 std::process::exit(1);
                             }
-                            
+
                             let tmp_path = tmp.to_string_lossy().to_string();
-                            let status = Command::new(std::env::current_exe().unwrap())
-                                .arg("import")
-                                .arg(&tmp_path)
-                                .env("SNEAKERWEB_DIR", std::env::var("SNEAKERWEB_DIR").unwrap_or_else(|_| ".sneakerweb_store".to_string()))
-                                .env("IMPORT_PROGRESS_FILE", PROGRESS_FILE_PATH)
-                                .status()
-                                .map(|s| s.success());
-                            
+                            let args = sneakerweb::import::ImportArgs {
+                                src: PathBuf::from(&tmp_path),
+                                mode: None,
+                            };
+                            let handle = sneakerweb::import::ProgressHandle::new();
+
+                            let poller_handle = handle.clone();
+                            let poller = std::thread::spawn(move || {
+                                use std::io::Write;
+                                loop {
+                                    std::thread::sleep(std::time::Duration::from_millis(200));
+                                    let phase = poller_handle.phase.load(std::sync::atomic::Ordering::Relaxed);
+                                    let json = progress_json(&poller_handle);
+                                    println!("{}", json);
+                                    let _ = std::io::stdout().flush();
+                                    if phase == sneakerweb::import::PHASE_DONE {
+                                        break;
+                                    }
+                                }
+                            });
+
+                            let result = smol::block_on(sneakerweb::import::import_sneak(&args, &handle));
+                            let _ = poller.join();
+
                             let _ = std::fs::remove_file(&tmp);
-                            
-                            match status {
-                                Ok(true) => {
+
+                            match result {
+                                Ok(_) => {
                                     println!("success");
                                     std::process::exit(0);
                                 }
-                                Ok(false) => {
-                                    eprintln!("Import failed");
-                                    std::process::exit(1);
-                                }
                                 Err(e) => {
-                                    eprintln!("Failed to run import: {}", e);
+                                    eprintln!("Import failed: {}", e);
                                     std::process::exit(1);
                                 }
                             }

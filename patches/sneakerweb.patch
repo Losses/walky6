@@ -1,5 +1,5 @@
 diff --git a/src/import.rs b/src/import.rs
-index 516aa52..fda3088 100644
+index 516aa52..c2056b8 100644
 --- a/src/import.rs
 +++ b/src/import.rs
 @@ -4,7 +4,7 @@ use smol::{
@@ -7,58 +7,88 @@ index 516aa52..fda3088 100644
      io::{AsyncBufReadExt, BufReader},
  };
 -use std::{collections::BTreeSet, path::PathBuf};
-+use std::{collections::BTreeSet, path::PathBuf, sync::Arc, sync::atomic::{AtomicU64, Ordering}};
++use std::{collections::BTreeSet, path::PathBuf, sync::Arc, sync::atomic::{AtomicU32, AtomicU64, Ordering}};
  use ufotofu::{
      ExpectedFinalError, ProduceAtLeastError,
      codec::{Blame, DecodeError},
-@@ -40,14 +40,46 @@ pub enum ImportMode {
+@@ -25,23 +25,62 @@ use crate::util::{SNEAKERWEB_NAMESPACE_ID_BYTES, domain_style, get_domain, hmm,
+ 
+ #[derive(Args)]
+ pub struct ImportArgs {
+-    /// The filesystem path of the .snk file to import from.
+     pub src: PathBuf,
+-    /// The filtering mode to use when importing entries from the .snk file.
+     pub mode: Option<ImportMode>,
+ }
+ 
+ #[derive(Clone, ValueEnum, Default)]
+ pub enum ImportMode {
+-    /// Import everything from the .snk file which you have not explicitly blocked. This is the default behaviour.
+     #[default]
+     All,
+-    /// Import only entries from the .snk file which correspond to domains you have already stored.
      Familiar,
  }
  
-+fn write_progress_file(path: &str, phase: &str, processed: u64, total: u64, message: &str) {
-+    let json = format!(
-+        "{{\"phase\":\"{}\",\"processed\":{},\"total\":{},\"message\":\"{}\"}}",
-+        phase, processed, total, message
-+    );
-+    let _ = std::fs::write(path, &json);
+-pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
++pub const PHASE_IDLE: u32 = 0;
++pub const PHASE_DECODING: u32 = 1;
++pub const PHASE_IMPORTING: u32 = 2;
++pub const PHASE_DONE: u32 = 3;
++
++#[derive(Clone)]
++pub struct ProgressHandle {
++    pub phase: Arc<AtomicU32>,
++    pub processed_bytes: Arc<AtomicU64>,
++    pub total_bytes: Arc<AtomicU64>,
 +}
 +
- pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
++impl ProgressHandle {
++    pub fn new() -> Self {
++        Self {
++            phase: Arc::new(AtomicU32::new(PHASE_IDLE)),
++            processed_bytes: Arc::new(AtomicU64::new(0)),
++            total_bytes: Arc::new(AtomicU64::new(0)),
++        }
++    }
++
++    pub fn phase_name(&self) -> &'static str {
++        match self.phase.load(Ordering::Relaxed) {
++            PHASE_IDLE => "idle",
++            PHASE_DECODING => "decoding",
++            PHASE_IMPORTING => "importing",
++            PHASE_DONE => "done",
++            _ => "unknown",
++        }
++    }
++
++    pub fn fraction(&self) -> f64 {
++        let total = self.total_bytes.load(Ordering::Relaxed);
++        if total == 0 {
++            return 0.0;
++        }
++        (self.processed_bytes.load(Ordering::Relaxed) as f64) / (total as f64)
++    }
++}
++
++pub async fn import_sneak(args: &ImportArgs, progress: &ProgressHandle) -> Result<()> {
      let file = File::open(&args.src).await?;
 +    let file_size = file.metadata().await.map(|m| m.len()).unwrap_or(0);
++    progress.total_bytes.store(file_size, Ordering::Relaxed);
++    progress.phase.store(PHASE_DECODING, Ordering::Relaxed);
      let drop_producer = reader_to_bulk_producer(file, new_unbounded_elastic());
      let sneakerweb_fs_path = sneakerweb_dir().await?;
      let namespace_id = NamespaceId::from_bytes(&SNEAKERWEB_NAMESPACE_ID_BYTES);
+@@ -86,6 +125,8 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
  
-     let mut store = PersistentStore::new(&sneakerweb_fs_path).await?;
+     let mut skipped = BTreeSet::new();
  
-+    let progress_file = std::env::var("IMPORT_PROGRESS_FILE").ok();
-+    let decoded_bytes = Arc::new(AtomicU64::new(0));
++    let pb_bytes = progress.processed_bytes.clone();
 +
-+    if let Some(ref pf) = progress_file {
-+        write_progress_file(pf, "decoding", 0, file_size, "Starting import...");
-+    }
-+
-+    let progress_file_clone = progress_file.clone();
-+    let decoded_bytes_clone = decoded_bytes.clone();
-+    let progress_handle = smol::spawn(async move {
-+        loop {
-+            smol::Timer::after(std::time::Duration::from_millis(200)).await;
-+            let current = decoded_bytes_clone.load(Ordering::Relaxed);
-+            if current == u64::MAX {
-+                break;
-+            }
-+            if let Some(ref pf) = progress_file_clone {
-+                write_progress_file(pf, "decoding", current, file_size, "Decoding entries...");
-+            }
-+        }
-+    });
-+    progress_handle.detach();
-+
-     let allowed = match args.mode.clone().unwrap_or_default() {
-         ImportMode::All => None,
-         ImportMode::Familiar => {
-@@ -96,14 +128,19 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
+     let mut filtering_decoder =
+         ClosureProducer::<_, (DropSliceMetadata, SliceStreamProducer<_>), (), Error>::new(
+             async || {
+@@ -96,14 +137,19 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
                          return Ok(Right(()));
                      };
  
@@ -70,16 +100,16 @@ index 516aa52..fda3088 100644
                          match &allowed {
 -                            None => return Ok(Left((metadata, slice_stream))),
 +                            None => {
-+                                decoded_bytes.fetch_add(entry_size, Ordering::Relaxed);
++                                pb_bytes.fetch_add(entry_size, Ordering::Relaxed);
 +                                return Ok(Left((metadata, slice_stream)));
 +                            }
                              Some(known) => {
                                  if known.contains(domain_id) {
-+                                    decoded_bytes.fetch_add(entry_size, Ordering::Relaxed);
++                                    pb_bytes.fetch_add(entry_size, Ordering::Relaxed);
                                      return Ok(Left((metadata, slice_stream)));
                                  }
                                  skip_reason = "unfamiliar";
-@@ -121,9 +158,10 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
+@@ -121,9 +167,10 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
  
                      skipped.insert(domain_id.clone());
  
@@ -91,35 +121,31 @@ index 516aa52..fda3088 100644
                                  "an entry in the .snk file was too large for this device",
                              )?,
                          )
-@@ -132,6 +170,7 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
+@@ -132,6 +179,7 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
                              Ok(()) => anyhow!("unexpected end of .snk file"),
                              Err(err) => map_decode_err(err),
                          })?;
-+                    decoded_bytes.fetch_add(skip_size, Ordering::Relaxed);
++                    pb_bytes.fetch_add(skip_size, Ordering::Relaxed);
                      slice_stream
                          .produce_final()
                          .await
-@@ -145,6 +184,11 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
+@@ -145,6 +193,8 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
              },
          );
  
-+    if let Some(ref pf) = progress_file {
-+        write_progress_file(pf, "importing", file_size, file_size, "Importing entries...");
-+    }
-+    decoded_bytes.store(u64::MAX, Ordering::Relaxed);
++    progress.phase.store(PHASE_IMPORTING, Ordering::Relaxed);
 +
      import_drop(&mut store, &mut filtering_decoder, true)
          .await
          .map_err(|err| match err {
-@@ -169,7 +213,12 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
+@@ -169,7 +219,11 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
          })?;
  
      match store.flush().await {
 -        Ok(_) => Ok(()),
 +        Ok(_) => {
-+            if let Some(ref pf) = progress_file {
-+                write_progress_file(pf, "done", file_size, file_size, "Import complete");
-+            }
++            progress.phase.store(PHASE_DONE, Ordering::Relaxed);
++            progress.processed_bytes.store(file_size, Ordering::Relaxed);
 +            Ok(())
 +        }
          Err(_) => bail!("failed to flush changes to the sneakerweb store"),
@@ -141,10 +167,21 @@ index 0000000..33026f9
 +pub mod util;
 +pub mod logo;
 diff --git a/src/main.rs b/src/main.rs
-index 8dddd90..29bf385 100644
+index 8dddd90..85480b0 100644
 --- a/src/main.rs
 +++ b/src/main.rs
-@@ -71,8 +71,9 @@ fn main() {
+@@ -46,8 +46,9 @@ fn main() {
+             }
+             Commands::Import(import_args) => {
+                 // Import the contents of a drop into the persistent store.
++                let progress = import::ProgressHandle::new();
+                 smol::block_on(async {
+-                    match import::import_sneak(import_args).await {
++                    match import::import_sneak(import_args, &progress).await {
+                         Ok(_) => {
+                             yay(&format!(
+                                 "successfully imported from {}",
+@@ -71,8 +72,9 @@ fn main() {
                  })
              }
              &Commands::Serve => {
