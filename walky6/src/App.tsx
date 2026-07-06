@@ -7,6 +7,7 @@ interface ImportProgress {
   phase: string;
   processed: number;
   total: number;
+  processed_entries: number;
   message: string;
 }
 
@@ -14,8 +15,6 @@ function App() {
   const [proxyPort, setProxyPort] = useState<number | null>(null);
   const [urlInput, setUrlInput] = useState("");
   const [isImporting, setIsImporting] = useState(false);
-  const [progressLabel, setProgressLabel] = useState("");
-  const [progressPercent, setProgressPercent] = useState(0);
   const [canGoBack, setCanGoBack] = useState(false);
   const [canGoForward, setCanGoForward] = useState(false);
   const historyStack = useRef<string[]>([]);
@@ -31,17 +30,14 @@ function App() {
     });
 
     const unlisten = listen<ImportProgress>("import-progress", (event) => {
-      const { phase, processed, total, message } = event.payload;
-      if (phase === "decoding" && total > 0) {
-        const pct = Math.min(90, Math.floor((processed / total) * 100));
-        setProgressLabel(`${message} (${pct}%)`);
-        setProgressPercent(pct);
-      } else if (phase === "importing") {
-        setProgressLabel(message);
-        setProgressPercent(90);
-      } else if (phase === "done") {
-        setProgressLabel("Import complete!");
-        setProgressPercent(100);
+      // Progress is now displayed in the content webview's progress page
+      // We still listen to detect when import is done
+      const { phase } = event.payload;
+      if (phase === "done") {
+        setTimeout(() => {
+          setIsImporting(false);
+          navigateTo(homePath);
+        }, 1500);
       }
     });
 
@@ -157,41 +153,33 @@ function App() {
 
   const handleImport = useCallback(async () => {
     setIsImporting(true);
-    setProgressLabel("Opening file dialog...");
-    setProgressPercent(0);
 
     try {
+      await invoke("navigate_content", { path: "/__progress__" });
       await invoke("pick_and_import");
-      setProgressLabel("Import complete!");
-      setProgressPercent(100);
-      setTimeout(() => {
-        setIsImporting(false);
-        setProgressLabel("");
-        setProgressPercent(0);
-        refresh();
-      }, 1500);
+      // Import completed successfully - navigation handled by event listener
     } catch (err) {
       const msg = String(err);
       if (msg.includes("cancelled")) {
         setIsImporting(false);
-        setProgressLabel("");
+        navigateTo(homePath);
       } else {
-        setProgressLabel(`Import failed: ${msg}`);
+        // Import failed - show error briefly then return home
+        console.error("Import failed:", msg);
         setTimeout(() => {
           setIsImporting(false);
-          setProgressLabel("");
-          setProgressPercent(0);
+          navigateTo(homePath);
         }, 3000);
       }
     }
-  }, [refresh]);
+  }, [navigateTo, homePath]);
 
   return (
     <div className="window app-window">
       <div className="toolbar">
         <button
           onClick={goBack}
-          disabled={!canGoBack}
+          disabled={!canGoBack || isImporting}
           className="toolbar-btn"
           title="Back"
         >
@@ -200,18 +188,28 @@ function App() {
         </button>
         <button
           onClick={goForward}
-          disabled={!canGoForward}
+          disabled={!canGoForward || isImporting}
           className="toolbar-btn"
           title="Forward"
         >
           <img src="/icons/forward.svg" alt="" />
           <span>Forward</span>
         </button>
-        <button onClick={refresh} className="toolbar-btn" title="Refresh">
+        <button
+          onClick={refresh}
+          disabled={isImporting}
+          className="toolbar-btn"
+          title="Refresh"
+        >
           <img src="/icons/refresh.svg" alt="" />
           <span>Refresh</span>
         </button>
-        <button onClick={goHome} className="toolbar-btn" title="Home">
+        <button
+          onClick={goHome}
+          disabled={isImporting}
+          className="toolbar-btn"
+          title="Home"
+        >
           <img src="/icons/home.svg" alt="" />
           <span>Home</span>
         </button>
@@ -233,29 +231,12 @@ function App() {
           value={urlInput}
           onChange={(e) => setUrlInput(e.target.value)}
           onKeyDown={handleKeyDown}
+          disabled={isImporting}
         />
-        <button onClick={handleGo} className="go-btn">
+        <button onClick={handleGo} disabled={isImporting} className="go-btn">
           <span className="label">Go</span>
         </button>
       </div>
-      {isImporting && (
-        <div className="import-overlay">
-          <div className="window" style={{ width: 360 }}>
-            <div className="title-bar">
-              <div className="title-bar-text">Importing...</div>
-            </div>
-            <div className="window-body" style={{ textAlign: "center" }}>
-              <div className="progress-indicator" style={{ marginBottom: 8 }}>
-                <span
-                  className="progress-indicator-bar"
-                  style={{ width: `${progressPercent}%` }}
-                />
-              </div>
-              <p>{progressLabel}</p>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

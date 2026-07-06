@@ -2,7 +2,12 @@
 
 fn main() {
     #[cfg(target_os = "linux")]
-    std::env::set_var("GDK_BACKEND", "x11");
+    {
+        if std::env::var("WAYLAND_DISPLAY").is_ok() {
+            std::env::set_var("GDK_BACKEND", "wayland");
+            std::env::set_var("GTK_CSD", "0");
+        }
+    }
 
     walky6_lib::run()
 }

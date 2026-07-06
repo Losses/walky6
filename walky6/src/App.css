@@ -81,6 +81,12 @@ body,
   pointer-events: none;
 }
 
+.address-bar input:disabled,
+.address-bar button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 .go-btn {
   min-width: 64px;
   text-align: left;
@@ -107,14 +113,4 @@ body,
 .address-bar input {
   flex: 1;
   padding: 2px 4px;
-}
-
-.import-overlay {
-  position: fixed;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(0, 0, 0, 0.5);
-  z-index: 10;
 }

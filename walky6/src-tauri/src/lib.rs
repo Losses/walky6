@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader as StdBufReader, Read, Write};
 use std::net::{TcpListener as StdTcpListener, TcpStream as StdTcpStream};
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 
 const TOOLBAR_H: u32 = 90;
@@ -12,9 +12,30 @@ pub struct SneakerwebState {
     pub sneakerweb_port: u16,
     pub proxy_port: u16,
     pub dir: PathBuf,
+    pub public_dir: PathBuf,
 }
 
 pub struct ContentWebview(pub std::sync::Arc<Mutex<Option<tauri::Webview>>>);
+
+pub struct ImportState {
+    pub is_importing: AtomicBool,
+    pub phase: AtomicU32,
+    pub processed_bytes: AtomicU64,
+    pub total_bytes: AtomicU64,
+    pub processed_entries: AtomicU64,
+}
+
+impl ImportState {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            is_importing: AtomicBool::new(false),
+            phase: AtomicU32::new(0),
+            processed_bytes: AtomicU64::new(0),
+            total_bytes: AtomicU64::new(0),
+            processed_entries: AtomicU64::new(0),
+        })
+    }
+}
 
 pub fn get_free_port() -> u16 {
     StdTcpListener::bind("127.0.0.1:0")
@@ -61,7 +82,7 @@ pub fn start_sneakerweb_server(port: u16, dir: PathBuf) {
     });
 }
 
-pub fn start_proxy_server(proxy_port: u16, sneakerweb_port: u16) {
+pub fn start_proxy_server(proxy_port: u16, sneakerweb_port: u16, public_dir: PathBuf, import_state: Arc<ImportState>) {
     std::thread::spawn(move || {
         let addr = format!("127.0.0.1:{proxy_port}");
         let listener = match StdTcpListener::bind(&addr) {
@@ -75,8 +96,10 @@ pub fn start_proxy_server(proxy_port: u16, sneakerweb_port: u16) {
 
         for stream in listener.incoming().flatten() {
             let sw_port = sneakerweb_port;
+            let pub_dir = public_dir.clone();
+            let state = import_state.clone();
             std::thread::spawn(move || {
-                if let Err(e) = handle_proxy_request(stream, sw_port) {
+                if let Err(e) = handle_proxy_request(stream, sw_port, &pub_dir, &state) {
                     eprintln!("proxy error: {e}");
                 }
             });
@@ -171,8 +194,88 @@ fn send_http_request(host: &str, port: u16, method: &str, path: &str, headers: &
     Ok((status_code, resp_headers, resp_body))
 }
 
-fn handle_proxy_request(mut client: StdTcpStream, sneakerweb_port: u16) -> anyhow::Result<()> {
+fn handle_proxy_request(mut client: StdTcpStream, sneakerweb_port: u16, public_dir: &PathBuf, import_state: &ImportState) -> anyhow::Result<()> {
     let (method, path, headers, body) = read_http_request(&mut client)?;
+
+    if path == "/__progress__" {
+        let progress_path = public_dir.join("progress.html");
+        match std::fs::read(&progress_path) {
+            Ok(content) => {
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n",
+                    content.len()
+                );
+                client.write_all(response.as_bytes())?;
+                client.write_all(&content)?;
+                client.flush()?;
+                return Ok(());
+            }
+            Err(e) => {
+                let err_msg = format!("Failed to read progress.html: {}", e);
+                let response = format!(
+                    "HTTP/1.1 500 Internal Server Error\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n{}",
+                    err_msg.len(), err_msg
+                );
+                client.write_all(response.as_bytes())?;
+                client.flush()?;
+                return Ok(());
+            }
+        }
+    }
+
+    if path == "/__assets__/data-loading.svg" {
+        let svg_path = public_dir.join("data-loading.svg");
+        match std::fs::read(&svg_path) {
+            Ok(content) => {
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: image/svg+xml\r\nConnection: close\r\n\r\n",
+                    content.len()
+                );
+                client.write_all(response.as_bytes())?;
+                client.write_all(&content)?;
+                client.flush()?;
+                return Ok(());
+            }
+            Err(e) => {
+                let err_msg = format!("Failed to read data-loading.svg: {}", e);
+                let response = format!(
+                    "HTTP/1.1 500 Internal Server Error\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n{}",
+                    err_msg.len(), err_msg
+                );
+                client.write_all(response.as_bytes())?;
+                client.flush()?;
+                return Ok(());
+            }
+        }
+    }
+
+    if path == "/__progress_api__" {
+        let is_importing = import_state.is_importing.load(Ordering::Relaxed);
+        let phase_val = import_state.phase.load(Ordering::Relaxed);
+        let phase = match phase_val {
+            0 => "idle",
+            1 => "decoding",
+            2 => "importing",
+            3 => "done",
+            4 => "error",
+            _ => "unknown",
+        };
+        let processed_bytes = import_state.processed_bytes.load(Ordering::Relaxed);
+        let total_bytes = import_state.total_bytes.load(Ordering::Relaxed);
+        let processed_entries = import_state.processed_entries.load(Ordering::Relaxed);
+
+        let json = format!(
+            r#"{{"is_importing":{},"phase":"{}","processed_bytes":{},"total_bytes":{},"processed_entries":{}}}"#,
+            is_importing, phase, processed_bytes, total_bytes, processed_entries
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}",
+            json.len(), json
+        );
+        client.write_all(response.as_bytes())?;
+        client.flush()?;
+        return Ok(());
+    }
 
     let (host, upstream_path) = if path.starts_with("/proxy/") {
         let rest = path.strip_prefix("/proxy/").unwrap_or("");
@@ -245,6 +348,7 @@ pub struct ImportProgress {
     pub phase: String,
     pub processed: u64,
     pub total: u64,
+    pub processed_entries: u64,
     pub message: String,
 }
 
@@ -258,6 +362,7 @@ fn progress_to_event(handle: &sneakerweb::import::ProgressHandle) -> ImportProgr
     };
     let processed = handle.processed_bytes.load(Ordering::Relaxed);
     let total = handle.total_bytes.load(Ordering::Relaxed);
+    let processed_entries = handle.processed_entries.load(Ordering::Relaxed);
     let message = match phase {
         "decoding" => "Decoding entries...",
         "importing" => "Importing entries...",
@@ -268,21 +373,37 @@ fn progress_to_event(handle: &sneakerweb::import::ProgressHandle) -> ImportProgr
         phase: phase.to_string(),
         processed,
         total,
+        processed_entries,
         message: message.to_string(),
     }
 }
 
-fn run_import_internal(app: AppHandle, file_path: PathBuf) -> anyhow::Result<()> {
+fn run_import_internal(app: AppHandle, file_path: PathBuf, import_state: Arc<ImportState>) -> anyhow::Result<()> {
+    import_state.is_importing.store(true, Ordering::Relaxed);
+    import_state.phase.store(1, Ordering::Relaxed);
+    import_state.processed_bytes.store(0, Ordering::Relaxed);
+    import_state.processed_entries.store(0, Ordering::Relaxed);
+
     let args = sneakerweb::import::ImportArgs {
         src: file_path,
         mode: None,
     };
     let handle = sneakerweb::import::ProgressHandle::new();
+    import_state.total_bytes.store(0, Ordering::Relaxed);
+
     let poller_handle = handle.clone();
     let app_clone = app.clone();
+    let state_clone = import_state.clone();
 
     let poller = std::thread::spawn(move || loop {
         let progress = progress_to_event(&poller_handle);
+        if progress.total > 0 {
+            state_clone.total_bytes.store(progress.total, Ordering::Relaxed);
+        }
+        state_clone.phase.store(poller_handle.phase.load(Ordering::Relaxed), Ordering::Relaxed);
+        state_clone.processed_bytes.store(progress.processed, Ordering::Relaxed);
+        state_clone.processed_entries.store(progress.processed_entries, Ordering::Relaxed);
+
         let is_done = progress.phase == "done";
         let _ = app_clone.emit("import-progress", progress);
         if is_done {
@@ -291,9 +412,16 @@ fn run_import_internal(app: AppHandle, file_path: PathBuf) -> anyhow::Result<()>
         std::thread::sleep(std::time::Duration::from_millis(200));
     });
 
-    smol::block_on(sneakerweb::import::import_sneak(&args, &handle))?;
+    let result = smol::block_on(sneakerweb::import::import_sneak(&args, &handle));
     let _ = poller.join();
-    Ok(())
+
+    if result.is_ok() {
+        import_state.phase.store(3, Ordering::Relaxed);
+    } else {
+        import_state.phase.store(4, Ordering::Relaxed);
+    }
+
+    result
 }
 
 #[tauri::command]
@@ -319,16 +447,16 @@ async fn navigate_content(
 }
 
 #[tauri::command]
-async fn import_file(app: AppHandle, file_path: String) -> Result<(), String> {
+async fn import_file(app: AppHandle, file_path: String, import_state: tauri::State<'_, Arc<ImportState>>) -> Result<(), String> {
     let path = PathBuf::from(&file_path);
     if !path.exists() {
         return Err(format!("File not found: {file_path}"));
     }
-    run_import_internal(app, path).map_err(|e| e.to_string())
+    run_import_internal(app, path, import_state.inner().clone()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-async fn pick_and_import(app: AppHandle) -> Result<(), String> {
+async fn pick_and_import(app: AppHandle, import_state: tauri::State<'_, Arc<ImportState>>) -> Result<(), String> {
     use tauri_plugin_dialog::DialogExt;
 
     let file_path = app
@@ -341,7 +469,7 @@ async fn pick_and_import(app: AppHandle) -> Result<(), String> {
     match file_path {
         Some(path) => {
             let file_path = path.to_string();
-            run_import_internal(app, PathBuf::from(&file_path)).map_err(|e| e.to_string())
+            run_import_internal(app, PathBuf::from(&file_path), import_state.inner().clone()).map_err(|e| e.to_string())
         }
         None => Err("File selection cancelled".to_string()),
     }
@@ -349,6 +477,17 @@ async fn pick_and_import(app: AppHandle) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "linux")]
+    {
+        // Disable DMABUF renderer in WebKitGTK to prevent rendering artifacts/blurriness on Linux
+        if std::env::var("WEBKIT_DISABLE_DMABUF_RENDERER").is_err() {
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        }
+    }
+
+    let public_dir = PathBuf::from(env!("WALKY6_PUBLIC_DIR"));
+    let import_state = ImportState::new();
+
     let sneakerweb_port = get_free_port();
     let proxy_port = get_free_port();
     let dir = ensure_sneakerweb_dir();
@@ -360,7 +499,7 @@ pub fn run() {
         eprintln!("sneakerweb server did not start in time");
     }
 
-    start_proxy_server(proxy_port, sneakerweb_port);
+    start_proxy_server(proxy_port, sneakerweb_port, public_dir.clone(), import_state.clone());
 
     let setup_proxy_port = proxy_port;
 
@@ -370,7 +509,9 @@ pub fn run() {
             sneakerweb_port,
             proxy_port,
             dir,
+            public_dir,
         }))
+        .manage(import_state)
         .manage(ContentWebview(std::sync::Arc::new(Mutex::new(None))))
         .setup(move |app| {
             let window = tauri::window::WindowBuilder::new(app, "main")
@@ -390,18 +531,21 @@ pub fn run() {
                 .parse()
                 .expect("invalid home URL");
 
+            let scale_factor = window.scale_factor().unwrap_or(1.0);
             let win_size = window.inner_size().unwrap_or(tauri::PhysicalSize::new(1024, 768));
-            let content_h = win_size.height.saturating_sub(TOOLBAR_H);
+            let toolbar_h_physical = (TOOLBAR_H as f64 * scale_factor).round() as u32;
+            let content_h = win_size.height.saturating_sub(toolbar_h_physical);
 
-            let main_webview = window
+            let _main_webview = window
                 .add_child(
                     tauri::webview::WebviewBuilder::new("main", tauri::WebviewUrl::App("index.html".into())),
                     tauri::PhysicalPosition::new(0u32, 0u32),
-                    tauri::PhysicalSize::new(win_size.width, TOOLBAR_H),
+                    tauri::PhysicalSize::new(win_size.width, toolbar_h_physical),
                 )
                 .expect("failed to create main webview");
 
-            let _ = main_webview.set_auto_resize(false);
+            #[cfg(not(target_os = "linux"))]
+            let _ = _main_webview.set_auto_resize(false);
 
             let builder =
                 tauri::webview::WebviewBuilder::new("content", tauri::WebviewUrl::External(home_url.clone()));
@@ -409,11 +553,12 @@ pub fn run() {
             let webview = window
                 .add_child(
                     builder,
-                    tauri::PhysicalPosition::new(0u32, TOOLBAR_H),
+                    tauri::PhysicalPosition::new(0u32, toolbar_h_physical),
                     tauri::PhysicalSize::new(win_size.width, content_h),
                 )
                 .expect("failed to add content webview");
 
+            #[cfg(not(target_os = "linux"))]
             let _ = webview.set_auto_resize(false);
 
             {
@@ -424,21 +569,34 @@ pub fn run() {
             #[cfg(target_os = "linux")]
             fix_linux_webview_packing(&window);
 
-            let wv_arc = app.state::<ContentWebview>().0.clone();
-            let main_wv = main_webview.clone();
-            window.on_window_event(move |event| {
-                if let tauri::WindowEvent::Resized(size) = event {
-                    let _ = main_wv.set_position(tauri::PhysicalPosition::new(0u32, 0u32));
-                    let _ = main_wv.set_size(tauri::PhysicalSize::new(size.width, TOOLBAR_H));
-                    if let Some(ref wv) = *wv_arc.lock().unwrap() {
-                        let _ = wv.set_position(tauri::PhysicalPosition::new(0u32, TOOLBAR_H));
-                        let _ = wv.set_size(tauri::PhysicalSize::new(
-                            size.width,
-                            size.height.saturating_sub(TOOLBAR_H),
-                        ));
+            #[cfg(not(target_os = "linux"))]
+            {
+                let wv_arc = app.state::<ContentWebview>().0.clone();
+                let main_wv = _main_webview.clone();
+                let window_clone = window.clone();
+                window.on_window_event(move |event| {
+                    let trigger = match event {
+                        tauri::WindowEvent::Resized(_) => true,
+                        tauri::WindowEvent::ScaleFactorChanged { .. } => true,
+                        _ => false,
+                    };
+                    if trigger {
+                        let scale_factor = window_clone.scale_factor().unwrap_or(1.0);
+                        let toolbar_h_physical = (TOOLBAR_H as f64 * scale_factor).round() as u32;
+                        if let Ok(size) = window_clone.inner_size() {
+                            let _ = main_wv.set_position(tauri::PhysicalPosition::new(0u32, 0u32));
+                            let _ = main_wv.set_size(tauri::PhysicalSize::new(size.width, toolbar_h_physical));
+                            if let Some(ref wv) = *wv_arc.lock().unwrap() {
+                                let _ = wv.set_position(tauri::PhysicalPosition::new(0u32, toolbar_h_physical));
+                                let _ = wv.set_size(tauri::PhysicalSize::new(
+                                    size.width,
+                                    size.height.saturating_sub(toolbar_h_physical),
+                                ));
+                            }
+                        }
                     }
-                }
-            });
+                });
+            }
 
             Ok(())
         })
@@ -456,6 +614,7 @@ pub fn run() {
 fn fix_linux_webview_packing(window: &tauri::window::Window) {
     use gtk::prelude::*;
     if let Ok(gtk_win) = window.gtk_window() {
+        gtk_win.set_titlebar(Option::<&gtk::Widget>::None);
         if let Some(container) = gtk_win.child() {
             if let Ok(container_box) = container.downcast::<gtk::Box>() {
                 let children = container_box.children();
