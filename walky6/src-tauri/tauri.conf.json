@@ -9,15 +9,7 @@
     "beforeBuildCommand": "bun run build"
   },
   "app": {
-    "windows": [
-      {
-        "title": "walky6",
-        "width": 1024,
-        "height": 768,
-        "resizable": true,
-        "fullscreen": false
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": null
     }

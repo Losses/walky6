@@ -4919,6 +4919,7 @@ name = "walky6"
 version = "1.0.0"
 dependencies = [
  "anyhow",
+ "gtk",
  "regex-lite",
  "serde",
  "serde_json",

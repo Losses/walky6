@@ -13,7 +13,6 @@ interface ImportProgress {
 function App() {
   const [proxyPort, setProxyPort] = useState<number | null>(null);
   const [urlInput, setUrlInput] = useState("");
-  const [iframeUrl, setIframeUrl] = useState("");
   const [isImporting, setIsImporting] = useState(false);
   const [progressLabel, setProgressLabel] = useState("");
   const [progressPercent, setProgressPercent] = useState(0);
@@ -21,7 +20,6 @@ function App() {
   const [canGoForward, setCanGoForward] = useState(false);
   const historyStack = useRef<string[]>([]);
   const historyIndex = useRef(-1);
-  const iframeRef = useRef<HTMLIFrameElement>(null);
 
   const homePath = "/";
 
@@ -47,21 +45,10 @@ function App() {
       }
     });
 
-    const handleMessage = (event: MessageEvent) => {
-      if (event.data && event.data.type === 'walky6_navigation') {
-        const path = event.data.path;
-        if (proxyPort !== null) {
-          setUrlInput(`http://127.0.0.1:${proxyPort}${path}`);
-        }
-      }
-    };
-    window.addEventListener('message', handleMessage);
-
     return () => {
       unlisten.then((fn) => fn());
-      window.removeEventListener('message', handleMessage);
     };
-  }, [proxyPort]);
+  }, []);
 
   useEffect(() => {
     if (proxyPort !== null) {
@@ -73,7 +60,6 @@ function App() {
     if (proxyPort === null) return;
     const fullUrl = `http://127.0.0.1:${proxyPort}${path}`;
     setUrlInput(fullUrl);
-    setIframeUrl(fullUrl);
 
     if (historyIndex.current < historyStack.current.length - 1) {
       historyStack.current = historyStack.current.slice(0, historyIndex.current + 1);
@@ -81,6 +67,12 @@ function App() {
     historyStack.current.push(path);
     historyIndex.current = historyStack.current.length - 1;
     updateNavButtons();
+
+    try {
+      await invoke("navigate_content", { path });
+    } catch (e) {
+      console.error("navigate_content failed:", e);
+    }
   }, [proxyPort]);
 
   const navigateTo = useCallback((path: string) => {
@@ -97,7 +89,7 @@ function App() {
       historyIndex.current--;
       const path = historyStack.current[historyIndex.current];
       setUrlInput(`http://127.0.0.1:${proxyPort}${path}`);
-      iframeRef.current?.contentWindow?.postMessage({ type: 'walky6_go_back' }, '*');
+      invoke("navigate_content", { path }).catch(console.error);
       updateNavButtons();
     }
   }, [proxyPort, updateNavButtons]);
@@ -107,7 +99,7 @@ function App() {
       historyIndex.current++;
       const path = historyStack.current[historyIndex.current];
       setUrlInput(`http://127.0.0.1:${proxyPort}${path}`);
-      iframeRef.current?.contentWindow?.postMessage({ type: 'walky6_go_forward' }, '*');
+      invoke("navigate_content", { path }).catch(console.error);
       updateNavButtons();
     }
   }, [proxyPort, updateNavButtons]);
@@ -118,9 +110,10 @@ function App() {
 
   const refresh = useCallback(() => {
     if (proxyPort !== null) {
-      iframeRef.current?.contentWindow?.postMessage({ type: 'walky6_refresh' }, '*');
+      const path = historyStack.current[historyIndex.current] || homePath;
+      invoke("navigate_content", { path }).catch(console.error);
     }
-  }, [proxyPort]);
+  }, [proxyPort, homePath]);
 
   const handleGo = useCallback(() => {
     const destination = urlInput.trim();
@@ -218,15 +211,6 @@ function App() {
           </div>
         </div>
       )}
-      <div className="content-container">
-        {iframeUrl && (
-          <iframe
-            ref={iframeRef}
-            src={iframeUrl}
-            className="content-iframe"
-          />
-        )}
-      </div>
     </div>
   );
 }

@@ -4,7 +4,7 @@ use std::net::{TcpListener as StdTcpListener, TcpStream as StdTcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 pub struct SneakerwebState {
     pub sneakerweb_port: u16,
@@ -200,7 +200,7 @@ fn handle_proxy_request(mut client: StdTcpStream, sneakerweb_port: u16) -> anyho
             "http://((?:sneakerweb|[a-f0-9]{{64}})\\.localhost(?:{sneakerweb_port})?)(/[^\"'\\s>]*)?"
         );
         let re = regex_lite::Regex::new(&pattern);
-        let mut rewritten = match re {
+        match re {
             Ok(re) => {
                 let rewritten = re.replace_all(&body_str, |caps: &regex_lite::Captures| {
                     let domain = caps.get(1).map_or("", |m| {
@@ -210,40 +210,10 @@ fn handle_proxy_request(mut client: StdTcpStream, sneakerweb_port: u16) -> anyho
                     let path = caps.get(2).map_or("/", |m| m.as_str());
                     format!("/proxy/{domain}{path}")
                 });
-                rewritten.into_owned()
+                rewritten.into_owned().into_bytes()
             }
-            Err(_) => body_str.into_owned(),
-        };
-
-        let script = r#"
-<script>
-  if (window.parent && window.parent !== window) {
-    window.parent.postMessage({
-      type: 'walky6_navigation',
-      path: window.location.pathname + window.location.search
-    }, '*');
-    window.addEventListener('message', (event) => {
-      if (event.data) {
-        if (event.data.type === 'walky6_go_back') {
-          window.history.back();
-        } else if (event.data.type === 'walky6_go_forward') {
-          window.history.forward();
-        } else if (event.data.type === 'walky6_refresh') {
-          window.location.reload();
+            Err(_) => resp_body,
         }
-      }
-    });
-  }
-</script>
-"#;
-        if let Some(pos) = rewritten.find("</head>") {
-            rewritten.insert_str(pos, script);
-        } else if let Some(pos) = rewritten.find("<body>") {
-            rewritten.insert_str(pos, script);
-        } else {
-            rewritten.push_str(script);
-        }
-        rewritten.into_bytes()
     } else {
         resp_body
     };
@@ -332,10 +302,17 @@ async fn get_proxy_port(state: tauri::State<'_, Mutex<SneakerwebState>>) -> Resu
 
 #[tauri::command]
 async fn navigate_content(
-    _state: tauri::State<'_, Mutex<SneakerwebState>>,
-    _content_wv: tauri::State<'_, ContentWebview>,
-    _path: String,
+    state: tauri::State<'_, Mutex<SneakerwebState>>,
+    content_wv: tauri::State<'_, ContentWebview>,
+    path: String,
 ) -> Result<(), String> {
+    let proxy_port = state.lock().map_err(|e| e.to_string())?.proxy_port;
+    let url = format!("http://127.0.0.1:{proxy_port}{path}");
+    let parsed: url::Url = url.parse().map_err(|e| format!("invalid URL: {e}"))?;
+    let wv = content_wv.0.lock().map_err(|e| e.to_string())?;
+    if let Some(ref wv) = *wv {
+        wv.navigate(parsed).map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 
@@ -394,10 +371,75 @@ pub fn run() {
         }))
         .manage(ContentWebview(std::sync::Arc::new(Mutex::new(None))))
         .setup(move |app| {
+            let window = tauri::window::WindowBuilder::new(app, "main")
+                .title("walky6")
+                .inner_size(1024.0, 768.0)
+                .resizable(true)
+                .fullscreen(false)
+                .build()
+                .expect("failed to create main window");
+
             eprintln!("Waiting for proxy on port {setup_proxy_port}...");
             if !wait_for_port(setup_proxy_port, 5000) {
                 eprintln!("proxy server did not start in time");
             }
+
+            let home_url: url::Url = format!("http://127.0.0.1:{}/", setup_proxy_port)
+                .parse()
+                .expect("invalid home URL");
+
+            let toolbar_h: u32 = 66;
+            let win_size = window.inner_size().unwrap_or(tauri::PhysicalSize::new(1024, 768));
+            let content_h = win_size.height.saturating_sub(toolbar_h);
+
+            let main_webview = window
+                .add_child(
+                    tauri::webview::WebviewBuilder::new("main", tauri::WebviewUrl::App("index.html".into())),
+                    tauri::PhysicalPosition::new(0u32, 0u32),
+                    tauri::PhysicalSize::new(win_size.width, toolbar_h),
+                )
+                .expect("failed to create main webview");
+
+            let _ = main_webview.set_auto_resize(false);
+
+            let builder =
+                tauri::webview::WebviewBuilder::new("content", tauri::WebviewUrl::External(home_url.clone()));
+
+            let webview = window
+                .add_child(
+                    builder,
+                    tauri::PhysicalPosition::new(0u32, toolbar_h),
+                    tauri::PhysicalSize::new(win_size.width, content_h),
+                )
+                .expect("failed to add content webview");
+
+            let _ = webview.set_auto_resize(false);
+
+            {
+                let state = app.state::<ContentWebview>();
+                *state.0.lock().unwrap() = Some(webview);
+            }
+
+            #[cfg(target_os = "linux")]
+            fix_linux_webview_packing(&window);
+
+            let wv_arc = app.state::<ContentWebview>().0.clone();
+            let main_wv = main_webview.clone();
+            window.on_window_event(move |event| {
+                if let tauri::WindowEvent::Resized(size) = event {
+                    let toolbar_h_physical: u32 = 66;
+                    let _ = main_wv.set_position(tauri::PhysicalPosition::new(0u32, 0u32));
+                    let _ = main_wv.set_size(tauri::PhysicalSize::new(size.width, toolbar_h_physical));
+                    if let Some(ref wv) = *wv_arc.lock().unwrap() {
+                        let _ = wv.set_position(tauri::PhysicalPosition::new(0u32, toolbar_h_physical));
+                        let _ = wv.set_size(tauri::PhysicalSize::new(
+                            size.width,
+                            size.height.saturating_sub(toolbar_h_physical),
+                        ));
+                    }
+                }
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -408,4 +450,27 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(target_os = "linux")]
+fn fix_linux_webview_packing(window: &tauri::window::Window) {
+    use gtk::prelude::*;
+    if let Ok(gtk_win) = window.gtk_window() {
+        if let Some(container) = gtk_win.child() {
+            if let Ok(container_box) = container.downcast::<gtk::Box>() {
+                let children = container_box.children();
+                for (index, child) in children.iter().enumerate() {
+                    if index == 0 {
+                        // Set explicit size request for the toolbar to prevent it from collapsing to 0 height
+                        child.set_size_request(-1, 66);
+                        // Toolbar webview: expand = false, fill = false
+                        container_box.set_child_packing(child, false, false, 0, gtk::PackType::Start);
+                    } else if index == 1 {
+                        // Content webview: expand = true, fill = true
+                        container_box.set_child_packing(child, true, true, 0, gtk::PackType::Start);
+                    }
+                }
+            }
+        }
+    }
 }
