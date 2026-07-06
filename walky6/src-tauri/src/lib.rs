@@ -307,10 +307,11 @@ async fn import_file(app: AppHandle, file_path: String, import_state: tauri::Sta
 pub fn run() {
     #[cfg(target_os = "linux")]
     {
-        // Disable DMABUF renderer in WebKitGTK to prevent rendering artifacts/blurriness on Linux
-        if std::env::var("WEBKIT_DISABLE_DMABUF_RENDERER").is_err() {
-            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
-        }
+        // Keep hardware acceleration (DMABUF renderer) enabled for better performance (60/120 FPS).
+        // Only disable it if experiencing rendering artifacts or crashes by setting the environment variable externally.
+        // if std::env::var("WEBKIT_DISABLE_DMABUF_RENDERER").is_err() {
+        //     std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        // }
     }
 
     let dist_dir = PathBuf::from(env!("WALKY6_DIST_DIR"));
@@ -488,23 +489,21 @@ pub fn run() {
 
                 let final_body = if is_rewritable {
                     let body_str = String::from_utf8_lossy(&resp_body);
-                    let re_str = r#"https?://(sneakerweb|[a-fA-F0-9]{64})\.localhost(?::\d+)?(/[^"'\s>]*)?"#;
-                    let re = regex_lite::Regex::new(re_str);
-                    match re {
-                        Ok(re) => {
-                            let rewritten = re.replace_all(&body_str, |caps: &regex_lite::Captures| {
-                                let subdomain = caps.get(1).map_or("", |m| m.as_str());
-                                let path = caps.get(2).map_or("", |m| m.as_str());
-                                if subdomain == "sneakerweb" {
-                                    format!("sneaker://home{path}")
-                                } else {
-                                    format!("sneaker://{subdomain}{path}")
-                                }
-                            });
-                            rewritten.into_owned().into_bytes()
+                    static RE: std::sync::OnceLock<regex_lite::Regex> = std::sync::OnceLock::new();
+                    let re = RE.get_or_init(|| {
+                        let re_str = r#"https?://(sneakerweb|[a-fA-F0-9]{64})\.localhost(?::\d+)?(/[^"'\s>]*)?"#;
+                        regex_lite::Regex::new(re_str).expect("failed to compile regex")
+                    });
+                    let rewritten = re.replace_all(&body_str, |caps: &regex_lite::Captures| {
+                        let subdomain = caps.get(1).map_or("", |m| m.as_str());
+                        let path = caps.get(2).map_or("", |m| m.as_str());
+                        if subdomain == "sneakerweb" {
+                            format!("sneaker://home{path}")
+                        } else {
+                            format!("sneaker://{subdomain}{path}")
                         }
-                        Err(_) => resp_body,
-                    }
+                    });
+                    rewritten.into_owned().into_bytes()
                 } else {
                     resp_body
                 };
