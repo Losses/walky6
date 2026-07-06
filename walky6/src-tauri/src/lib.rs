@@ -346,19 +346,9 @@ pub fn run() {
                 if path.starts_with("/assets/") {
                     let asset_path = dist_dir.join(path.trim_start_matches('/'));
                     if let Ok(content) = std::fs::read(&asset_path) {
-                        let content_type = if path.ends_with(".js") {
-                            "application/javascript"
-                        } else if path.ends_with(".css") {
-                            "text/css"
-                        } else if path.ends_with(".svg") {
-                            "image/svg+xml"
-                        } else if path.ends_with(".woff2") {
-                            "font/woff2"
-                        } else if path.ends_with(".woff") {
-                            "font/woff"
-                        } else {
-                            "application/octet-stream"
-                        };
+                        let content_type = mime_guess2::from_path(&asset_path)
+                            .first_or_octet_stream()
+                            .to_string();
                         let response = tauri::http::Response::builder()
                             .status(200)
                             .header("Content-Type", content_type)
@@ -460,16 +450,10 @@ pub fn run() {
                 if content_type.is_empty() {
                     if path == "/" || path == "/oldest" || path == "/newest" || path == "/sneakiest" || has_html_prefix {
                         content_type = "text/html; charset=utf-8".to_string();
-                    } else if path.ends_with(".css") {
-                        content_type = "text/css".to_string();
-                    } else if path.ends_with(".js") {
-                        content_type = "application/javascript".to_string();
-                    } else if path.ends_with(".png") {
-                        content_type = "image/png".to_string();
-                    } else if path.ends_with(".jpg") || path.ends_with(".jpeg") {
-                        content_type = "image/jpeg".to_string();
-                    } else if path.ends_with(".svg") {
-                        content_type = "image/svg+xml".to_string();
+                    } else {
+                        content_type = mime_guess2::from_path(path)
+                            .first_or_octet_stream()
+                            .to_string();
                     }
                 }
 

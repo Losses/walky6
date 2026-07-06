@@ -4920,6 +4920,7 @@ version = "1.0.0"
 dependencies = [
  "anyhow",
  "gtk",
+ "mime_guess2",
  "regex-lite",
  "serde",
  "serde_json",
