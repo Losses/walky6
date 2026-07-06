@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import "./App.css";
 
 function App() {
@@ -11,112 +12,140 @@ function App() {
   const historyStack = useRef<string[]>([]);
   const historyIndex = useRef(-1);
 
-  const homePath = "/";
-
-  useEffect(() => {
-    invoke<string>("get_base_url").then((url) => {
-      setBaseUrl(url);
-      setUrlInput(url);
-    });
-  }, []);
-
-  useEffect(() => {
-    if (baseUrl !== null) {
-      navigateToInternal(homePath);
-    }
-  }, [baseUrl]);
-
-  const navigateToInternal = useCallback(
-    async (path: string) => {
-      if (baseUrl === null) return;
-      const cleanPath = path.startsWith("/") ? path.slice(1) : path;
-      const fullUrl = `${baseUrl}${cleanPath}`;
-      setUrlInput(fullUrl);
-
-      if (historyIndex.current < historyStack.current.length - 1) {
-        historyStack.current = historyStack.current.slice(
-          0,
-          historyIndex.current + 1,
-        );
-      }
-      historyStack.current.push(path);
-      historyIndex.current = historyStack.current.length - 1;
-      updateNavButtons();
-
-      try {
-        await invoke("navigate_content", { path });
-      } catch (e) {
-        console.error("navigate_content failed:", e);
-      }
-    },
-    [baseUrl],
-  );
-
-  const navigateTo = useCallback(
-    (path: string) => {
-      navigateToInternal(path);
-    },
-    [navigateToInternal],
-  );
-
   const updateNavButtons = useCallback(() => {
     setCanGoBack(historyIndex.current > 0);
     setCanGoForward(historyIndex.current < historyStack.current.length - 1);
   }, []);
 
-  const goBack = useCallback(() => {
-    if (historyIndex.current > 0 && baseUrl !== null) {
-      historyIndex.current--;
-      const path = historyStack.current[historyIndex.current];
-      const cleanPath = path.startsWith("/") ? path.slice(1) : path;
-      setUrlInput(`${baseUrl}${cleanPath}`);
-      invoke("navigate_content", { path }).catch(console.error);
-      updateNavButtons();
+  const navigateToInternal = useCallback(
+    async (url: string) => {
+      try {
+        await invoke("navigate_content", { path: url });
+      } catch (e) {
+        console.error("navigate_content failed:", e);
+      }
+    },
+    [],
+  );
+
+  const navigateTo = useCallback(
+    (urlOrPath: string) => {
+      if (baseUrl === null) return;
+      let url = urlOrPath;
+      if (!url.startsWith("sneaker://")) {
+        if (urlOrPath === "/" || urlOrPath === "") {
+          url = "sneaker://home/";
+        } else {
+          const cleanPath = urlOrPath.startsWith("/") ? urlOrPath.slice(1) : urlOrPath;
+          url = `${baseUrl}${cleanPath}`;
+        }
+      }
+      navigateToInternal(url);
+    },
+    [baseUrl, navigateToInternal],
+  );
+
+  useEffect(() => {
+    invoke<string>("get_base_url").then((url) => {
+      setBaseUrl(url);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (baseUrl !== null) {
+      navigateTo("sneaker://home/");
     }
-  }, [baseUrl, updateNavButtons]);
+  }, [baseUrl, navigateTo]);
+
+  useEffect(() => {
+    const unlisten = listen<string>("webview-navigated", (event) => {
+      const newUrl = event.payload;
+
+      // Handle progress page
+      if (newUrl.includes("/__progress__")) {
+        setUrlInput("Importing...");
+        return;
+      }
+
+      // Check where we are in history
+      const currentUrl = historyStack.current[historyIndex.current];
+      if (currentUrl === newUrl) {
+        setUrlInput(newUrl);
+        updateNavButtons();
+        return;
+      }
+
+      // Check if it's a back navigation
+      if (historyIndex.current > 0 && historyStack.current[historyIndex.current - 1] === newUrl) {
+        historyIndex.current--;
+        setUrlInput(newUrl);
+        updateNavButtons();
+        return;
+      }
+
+      // Check if it's a forward navigation
+      if (historyIndex.current < historyStack.current.length - 1 && historyStack.current[historyIndex.current + 1] === newUrl) {
+        historyIndex.current++;
+        setUrlInput(newUrl);
+        updateNavButtons();
+        return;
+      }
+
+      // Otherwise, new navigation
+      historyStack.current = historyStack.current.slice(0, historyIndex.current + 1);
+      historyStack.current.push(newUrl);
+      historyIndex.current = historyStack.current.length - 1;
+      setUrlInput(newUrl);
+      updateNavButtons();
+    });
+
+    return () => {
+      unlisten.then((f) => f());
+    };
+  }, [updateNavButtons]);
+
+  const goBack = useCallback(() => {
+    if (historyIndex.current > 0) {
+      const prevUrl = historyStack.current[historyIndex.current - 1];
+      invoke("navigate_content", { path: prevUrl }).catch(console.error);
+    }
+  }, []);
 
   const goForward = useCallback(() => {
-    if (
-      historyIndex.current < historyStack.current.length - 1 &&
-      baseUrl !== null
-    ) {
-      historyIndex.current++;
-      const path = historyStack.current[historyIndex.current];
-      const cleanPath = path.startsWith("/") ? path.slice(1) : path;
-      setUrlInput(`${baseUrl}${cleanPath}`);
-      invoke("navigate_content", { path }).catch(console.error);
-      updateNavButtons();
+    if (historyIndex.current < historyStack.current.length - 1) {
+      const nextUrl = historyStack.current[historyIndex.current + 1];
+      invoke("navigate_content", { path: nextUrl }).catch(console.error);
     }
-  }, [baseUrl, updateNavButtons]);
+  }, []);
 
   const goHome = useCallback(() => {
-    navigateTo(homePath);
-  }, [navigateTo, homePath]);
+    navigateTo("sneaker://home/");
+  }, [navigateTo]);
 
   const refresh = useCallback(() => {
-    if (baseUrl !== null) {
-      const path = historyStack.current[historyIndex.current] || homePath;
-      invoke("navigate_content", { path }).catch(console.error);
+    if (historyIndex.current >= 0) {
+      const currentUrl = historyStack.current[historyIndex.current];
+      invoke("navigate_content", { path: currentUrl }).catch(console.error);
+    } else {
+      navigateTo("sneaker://home/");
     }
-  }, [baseUrl, homePath]);
+  }, [navigateTo]);
 
   const handleGo = useCallback(() => {
-    const destination = urlInput.trim();
+    let destination = urlInput.trim();
     if (baseUrl === null) return;
 
-    if (destination.startsWith(baseUrl)) {
-      const path = "/" + destination.slice(baseUrl.length);
-      navigateTo(path);
-    } else if (
-      !destination.startsWith("http://") &&
-      !destination.startsWith("https://") &&
-      !destination.startsWith("sneaker://")
-    ) {
-      const path = destination.startsWith("/")
-        ? destination
-        : `/${destination}`;
-      navigateTo(path);
+    if (!destination.startsWith("sneaker://")) {
+      const hashRegex = /^[a-fA-F0-9]{64}/;
+      if (hashRegex.test(destination)) {
+        destination = `sneaker://${destination}`;
+      } else {
+        const cleanPath = destination.startsWith("/") ? destination.slice(1) : destination;
+        destination = `${baseUrl}${cleanPath}`;
+      }
     }
+
+    navigateTo(destination);
   }, [urlInput, baseUrl, navigateTo]);
 
   const handleKeyDown = useCallback(
@@ -146,9 +175,7 @@ function App() {
       
       // Import completed, navigate back to previous URL
       setTimeout(() => {
-        const url = new URL(previousUrl);
-        const path = url.pathname + url.search + url.hash;
-        invoke("navigate_content", { path });
+        invoke("navigate_content", { path: previousUrl });
         setIsImporting(false);
       }, 1500);
     } catch (err) {

@@ -225,10 +225,7 @@ fn run_import_internal(app: AppHandle, file_path: PathBuf, import_state: Arc<Imp
 
 #[tauri::command]
 fn get_base_url() -> String {
-    #[cfg(target_os = "windows")]
-    { "http://sneaker.localhost/".to_string() }
-    #[cfg(not(target_os = "windows"))]
-    { "sneaker://localhost/".to_string() }
+    "sneaker://home/".to_string()
 }
 
 #[tauri::command]
@@ -236,18 +233,24 @@ async fn navigate_content(
     content_wv: tauri::State<'_, ContentWebview>,
     path: String,
 ) -> Result<(), String> {
-    #[cfg(target_os = "windows")]
-    let base = "http://sneaker.localhost";
-    #[cfg(not(target_os = "windows"))]
-    let base = "sneaker://localhost";
+    let parsed = if path.starts_with("sneaker://") {
+        url::Url::parse(&path).map_err(|e| format!("invalid URL: {e}"))?
+    } else {
+        let base = "sneaker://home";
+        let clean_path = if path.starts_with('/') { path } else { format!("/{path}") };
+        url::Url::parse(&format!("{base}{clean_path}")).map_err(|e| format!("invalid URL: {e}"))?
+    };
 
-    let url = format!("{base}{path}");
-    let parsed: url::Url = url.parse().map_err(|e| format!("invalid URL: {e}"))?;
     let wv = content_wv.0.lock().map_err(|e| e.to_string())?;
     if let Some(ref wv) = *wv {
         wv.navigate(parsed).map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+#[tauri::command]
+fn on_url_changed(app: AppHandle, url: String) {
+    let _ = app.emit("webview-navigated", url);
 }
 
 #[tauri::command]
@@ -395,15 +398,11 @@ pub fn run() {
                 }
 
                 // 4. Serving proxy / upstream server requests
-                let (upstream_host, upstream_path) = if path.starts_with("/proxy/") {
-                    let rest = path.strip_prefix("/proxy/").unwrap_or("");
-                    if let Some((domain, subpath)) = rest.split_once('/') {
-                        let sp = if subpath.is_empty() { "/" } else { subpath };
-                        let sp_formatted = if sp.starts_with('/') { sp.to_string() } else { format!("/{sp}") };
-                        (format!("{domain}.localhost:{sw_port}"), sp_formatted)
-                    } else {
-                        (format!("{rest}.localhost:{sw_port}"), "/".to_string())
-                    }
+                let host = req.uri().host().unwrap_or("home");
+                let (upstream_host, upstream_path) = if host == "home" || host == "localhost" || host.is_empty() {
+                    (format!("sneakerweb.localhost:{sw_port}"), path.to_string())
+                } else if host.len() == 64 {
+                    (format!("{host}.localhost:{sw_port}"), path.to_string())
                 } else {
                     (format!("sneakerweb.localhost:{sw_port}"), path.to_string())
                 };
@@ -457,23 +456,26 @@ pub fn run() {
                     }
                 }
 
-                let is_html = content_type.contains("text/html");
+                let is_rewritable = content_type.contains("text/html")
+                    || content_type.contains("text/css")
+                    || content_type.contains("application/javascript")
+                    || content_type.contains("text/javascript")
+                    || content_type.contains("application/json");
 
-                let final_body = if is_html {
+                let final_body = if is_rewritable {
                     let body_str = String::from_utf8_lossy(&resp_body);
-                    let pattern = format!(
-                        "http://((?:sneakerweb|[a-f0-9]{{64}})\\.localhost(?:{sw_port})?)(/[^\"'\\s>]*)?"
-                    );
-                    let re = regex_lite::Regex::new(&pattern);
+                    let re_str = r#"https?://(sneakerweb|[a-fA-F0-9]{64})\.localhost(?::\d+)?(/[^"'\s>]*)?"#;
+                    let re = regex_lite::Regex::new(re_str);
                     match re {
                         Ok(re) => {
                             let rewritten = re.replace_all(&body_str, |caps: &regex_lite::Captures| {
-                                let domain = caps.get(1).map_or("", |m| {
-                                    let s = m.as_str();
-                                    s.split('.').next().unwrap_or(s)
-                                });
-                                let path = caps.get(2).map_or("/", |m| m.as_str());
-                                format!("/proxy/{domain}{path}")
+                                let subdomain = caps.get(1).map_or("", |m| m.as_str());
+                                let path = caps.get(2).map_or("", |m| m.as_str());
+                                if subdomain == "sneakerweb" {
+                                    format!("sneaker://home{path}")
+                                } else {
+                                    format!("sneaker://{subdomain}{path}")
+                                }
                             });
                             rewritten.into_owned().into_bytes()
                         }
@@ -514,10 +516,7 @@ pub fn run() {
                 .build()
                 .expect("failed to create main window");
 
-            #[cfg(target_os = "windows")]
-            let home_url: url::Url = "http://sneaker.localhost/".parse().unwrap();
-            #[cfg(not(target_os = "windows"))]
-            let home_url: url::Url = "sneaker://localhost/".parse().unwrap();
+            let home_url: url::Url = "sneaker://home/".parse().unwrap();
 
             let scale_factor = window.scale_factor().unwrap_or(1.0);
             let win_size = window.inner_size().unwrap_or(tauri::PhysicalSize::new(1024, 768));
@@ -535,8 +534,58 @@ pub fn run() {
             #[cfg(not(target_os = "linux"))]
             let _ = _main_webview.set_auto_resize(false);
 
+            let app_handle_clone = app.app_handle().clone();
             let builder =
-                tauri::webview::WebviewBuilder::new("content", tauri::WebviewUrl::External(home_url.clone()));
+                tauri::webview::WebviewBuilder::new("content", tauri::WebviewUrl::External(home_url.clone()))
+                    .initialization_script(r#"
+                        (function() {
+                            if (window !== window.top) return;
+                            function notifyUrlChange() {
+                                const url = window.location.href;
+                                const send = () => {
+                                    if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) {
+                                        window.__TAURI_INTERNALS__.invoke("on_url_changed", { url });
+                                        return true;
+                                    } else if (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke) {
+                                        window.__TAURI__.core.invoke("on_url_changed", { url });
+                                        return true;
+                                    }
+                                    return false;
+                                };
+                                if (!send()) {
+                                    let attempts = 0;
+                                    const interval = setInterval(() => {
+                                        attempts++;
+                                        if (send() || attempts > 10) {
+                                            clearInterval(interval);
+                                        }
+                                    }, 100);
+                                }
+                            }
+                            const originalPushState = history.pushState;
+                            history.pushState = function() {
+                                originalPushState.apply(this, arguments);
+                                notifyUrlChange();
+                            };
+                            const originalReplaceState = history.replaceState;
+                            history.replaceState = function() {
+                                originalReplaceState.apply(this, arguments);
+                                notifyUrlChange();
+                            };
+                            window.addEventListener('popstate', notifyUrlChange);
+                            window.addEventListener('hashchange', notifyUrlChange);
+                            window.addEventListener('load', notifyUrlChange);
+                            document.addEventListener('DOMContentLoaded', notifyUrlChange);
+                        })();
+                    "#)
+                    .on_page_load(move |webview, payload| {
+                        if payload.event() == tauri::webview::PageLoadEvent::Finished {
+                            if let Ok(url) = webview.url() {
+                                let url_str = url.to_string();
+                                let _ = app_handle_clone.emit("webview-navigated", url_str);
+                            }
+                        }
+                    });
 
             let webview = window
                 .add_child(
@@ -592,7 +641,8 @@ pub fn run() {
             get_base_url,
             navigate_content,
             import_file,
-            pick_file
+            pick_file,
+            on_url_changed
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
