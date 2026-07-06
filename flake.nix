@@ -1,5 +1,5 @@
 {
-  description = "walky6 - Tauri-based sneakerweb browser";
+  description = "walky6 - A tiny sneakerweb browser";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
