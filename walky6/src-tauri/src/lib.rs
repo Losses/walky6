@@ -612,6 +612,18 @@ pub fn run() {
                                 });
                             }
                         }
+                    })
+                    .on_new_window({
+                        let app_handle = app.app_handle().clone();
+                        move |url, _features| {
+                            let state = app_handle.state::<ContentWebview>();
+                            if let Ok(guard) = state.0.lock() {
+                                if let Some(ref wv) = *guard {
+                                    let _ = wv.navigate(url);
+                                }
+                            }
+                            tauri::webview::NewWindowResponse::Deny
+                        }
                     });
 
             let webview = window
