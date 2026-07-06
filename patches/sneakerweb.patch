@@ -1,3 +1,145 @@
+diff --git a/src/import.rs b/src/import.rs
+index 516aa52..fda3088 100644
+--- a/src/import.rs
++++ b/src/import.rs
+@@ -4,7 +4,7 @@ use smol::{
+     fs::File,
+     io::{AsyncBufReadExt, BufReader},
+ };
+-use std::{collections::BTreeSet, path::PathBuf};
++use std::{collections::BTreeSet, path::PathBuf, sync::Arc, sync::atomic::{AtomicU64, Ordering}};
+ use ufotofu::{
+     ExpectedFinalError, ProduceAtLeastError,
+     codec::{Blame, DecodeError},
+@@ -40,14 +40,46 @@ pub enum ImportMode {
+     Familiar,
+ }
+ 
++fn write_progress_file(path: &str, phase: &str, processed: u64, total: u64, message: &str) {
++    let json = format!(
++        "{{\"phase\":\"{}\",\"processed\":{},\"total\":{},\"message\":\"{}\"}}",
++        phase, processed, total, message
++    );
++    let _ = std::fs::write(path, &json);
++}
++
+ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
+     let file = File::open(&args.src).await?;
++    let file_size = file.metadata().await.map(|m| m.len()).unwrap_or(0);
+     let drop_producer = reader_to_bulk_producer(file, new_unbounded_elastic());
+     let sneakerweb_fs_path = sneakerweb_dir().await?;
+     let namespace_id = NamespaceId::from_bytes(&SNEAKERWEB_NAMESPACE_ID_BYTES);
+ 
+     let mut store = PersistentStore::new(&sneakerweb_fs_path).await?;
+ 
++    let progress_file = std::env::var("IMPORT_PROGRESS_FILE").ok();
++    let decoded_bytes = Arc::new(AtomicU64::new(0));
++
++    if let Some(ref pf) = progress_file {
++        write_progress_file(pf, "decoding", 0, file_size, "Starting import...");
++    }
++
++    let progress_file_clone = progress_file.clone();
++    let decoded_bytes_clone = decoded_bytes.clone();
++    let progress_handle = smol::spawn(async move {
++        loop {
++            smol::Timer::after(std::time::Duration::from_millis(200)).await;
++            let current = decoded_bytes_clone.load(Ordering::Relaxed);
++            if current == u64::MAX {
++                break;
++            }
++            if let Some(ref pf) = progress_file_clone {
++                write_progress_file(pf, "decoding", current, file_size, "Decoding entries...");
++            }
++        }
++    });
++    progress_handle.detach();
++
+     let allowed = match args.mode.clone().unwrap_or_default() {
+         ImportMode::All => None,
+         ImportMode::Familiar => {
+@@ -96,14 +128,19 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
+                         return Ok(Right(()));
+                     };
+ 
++                    let entry_size = metadata.expected_bytes();
+                     let mut skip_reason = "blocked";
+                     let domain_id = metadata.entry().subspace_id();
+ 
+                     if !blocked.contains(domain_id) {
+                         match &allowed {
+-                            None => return Ok(Left((metadata, slice_stream))),
++                            None => {
++                                decoded_bytes.fetch_add(entry_size, Ordering::Relaxed);
++                                return Ok(Left((metadata, slice_stream)));
++                            }
+                             Some(known) => {
+                                 if known.contains(domain_id) {
++                                    decoded_bytes.fetch_add(entry_size, Ordering::Relaxed);
+                                     return Ok(Left((metadata, slice_stream)));
+                                 }
+                                 skip_reason = "unfamiliar";
+@@ -121,9 +158,10 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
+ 
+                     skipped.insert(domain_id.clone());
+ 
++                    let skip_size = metadata.expected_bytes();
+                     slice_stream
+                         .skip(
+-                            metadata.expected_bytes().try_into().context(
++                            skip_size.try_into().context(
+                                 "an entry in the .snk file was too large for this device",
+                             )?,
+                         )
+@@ -132,6 +170,7 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
+                             Ok(()) => anyhow!("unexpected end of .snk file"),
+                             Err(err) => map_decode_err(err),
+                         })?;
++                    decoded_bytes.fetch_add(skip_size, Ordering::Relaxed);
+                     slice_stream
+                         .produce_final()
+                         .await
+@@ -145,6 +184,11 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
+             },
+         );
+ 
++    if let Some(ref pf) = progress_file {
++        write_progress_file(pf, "importing", file_size, file_size, "Importing entries...");
++    }
++    decoded_bytes.store(u64::MAX, Ordering::Relaxed);
++
+     import_drop(&mut store, &mut filtering_decoder, true)
+         .await
+         .map_err(|err| match err {
+@@ -169,7 +213,12 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
+         })?;
+ 
+     match store.flush().await {
+-        Ok(_) => Ok(()),
++        Ok(_) => {
++            if let Some(ref pf) = progress_file {
++                write_progress_file(pf, "done", file_size, file_size, "Import complete");
++            }
++            Ok(())
++        }
+         Err(_) => bail!("failed to flush changes to the sneakerweb store"),
+     }
+ }
+diff --git a/src/lib.rs b/src/lib.rs
+new file mode 100644
+index 0000000..33026f9
+--- /dev/null
++++ b/src/lib.rs
+@@ -0,0 +1,9 @@
++pub mod block;
++pub mod commands;
++pub mod domain;
++pub mod export;
++pub mod import;
++pub mod publish;
++pub mod serve;
++pub mod util;
++pub mod logo;
 diff --git a/src/main.rs b/src/main.rs
 index 8dddd90..29bf385 100644
 --- a/src/main.rs
@@ -202,18 +344,3 @@ index 4406952..02fa524 100644
  /// Styles text using the conventions for sneakerweb domains.
  pub fn domain_style(message: &str) -> String {
      format!("{}", message.bold().color(Color::Green))
-diff --git a/src/lib.rs b/src/lib.rs
-new file mode 100644
-index 0000000..33026f9
---- /dev/null
-+++ b/src/lib.rs
-@@ -0,0 +1,9 @@
-+pub mod block;
-+pub mod commands;
-+pub mod domain;
-+pub mod export;
-+pub mod import;
-+pub mod publish;
-+pub mod serve;
-+pub mod util;
-+pub mod logo;

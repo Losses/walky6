@@ -17,24 +17,52 @@ import {
 import { readFileSync } from "fs";
 import { spawn } from "child_process";
 
-// Read session file (single JSON with all ports)
 let sneakerwebPort = "8080";
+let progressFile = "/tmp/walking-viewer-import-progress";
 
 try {
   const raw = readFileSync("/tmp/walking-viewer-session", "utf8").trim();
   const session = JSON.parse(raw);
   if (session.sneakerwebPort) sneakerwebPort = String(session.sneakerwebPort);
+  if (session.progressFile) progressFile = String(session.progressFile);
 } catch (e) {}
 
-// 1. Reactive states for the browser window
 const homeUrl = `http://sneakerweb.localhost:${sneakerwebPort}`;
 const currentUrl = State(homeUrl);
 const urlInput = State(homeUrl);
 const statusText = State("Done");
 const isLoading = State(false);
 const canGoBackState = State(false);
+const progressText = State("");
+const progressVisible = State(false);
 
-// 2. Initialize the main WebView widget
+function formatProgress(progress: any): string {
+  const { phase, processed, total, message } = progress;
+  if (phase === "idle" || !total || total === 0) return "";
+  if (phase === "done") return "Import complete!";
+
+  let pct: number;
+  if (phase === "importing") {
+    pct = 95;
+  } else {
+    pct = Math.min(90, Math.floor((processed / total) * 100));
+  }
+
+  const filled = Math.floor(pct / 100 * 30);
+  const empty = 30 - filled;
+  const bar = "\u2588".repeat(filled) + "\u2591".repeat(empty);
+  return `[${bar}] ${pct}% ${message || phase}`;
+}
+
+function readProgress(): any | null {
+  try {
+    const raw = readFileSync(progressFile, "utf8").trim();
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
 const wv = WebView({
   url: currentUrl.value,
   width: -1,
@@ -60,17 +88,21 @@ const wv = WebView({
   }
 });
 
-// 3. Handle import via native file picker (direct subprocess)
 function handleImport() {
   console.log("[handleImport] Spawning pick-and-import subprocess...");
   statusText.set("Opening file dialog...");
   isLoading.set(true);
+  progressVisible.set(true);
+  progressText.set("Waiting for file selection...");
+
+  let pollInterval: ReturnType<typeof setInterval> | null = null;
 
   const wrapperPath = "./target/release/sneakerweb-wrapper";
   const proc = spawn(wrapperPath, ["pick-and-import"], {
     env: {
       ...process.env,
-      SNEAKERWEB_DIR: "./.sneakerweb_store"
+      SNEAKERWEB_DIR: "./.sneakerweb_store",
+      IMPORT_PROGRESS_FILE: progressFile
     }
   });
 
@@ -85,34 +117,52 @@ function handleImport() {
     stderr += data.toString();
   });
 
+  pollInterval = setInterval(() => {
+    const progress = readProgress();
+    if (progress) {
+      const text = formatProgress(progress);
+      if (text) progressText.set(text);
+      if (progress.phase === "done") {
+        if (pollInterval) clearInterval(pollInterval);
+        pollInterval = null;
+      }
+    }
+  }, 200);
+
   proc.on("close", (code) => {
+    if (pollInterval) clearInterval(pollInterval);
     if (code === 0) {
       statusText.set("Successfully imported!");
+      progressText.set("Import complete!");
       alert({ title: "Import Succeeded", message: "Drop imported successfully!" });
       webviewLoadUrl(wv, homeUrl);
     } else if (stderr.includes("cancelled")) {
       statusText.set("Done");
+      progressText.set("");
+      progressVisible.set(false);
     } else {
       statusText.set(`Import failed: ${stderr.trim() || "unknown error"}`);
+      progressText.set("Import failed");
       alert({ title: "Import Failed", message: `Could not import drop:\n${stderr.trim() || "unknown error"}` });
     }
     isLoading.set(false);
   });
 
   proc.on("error", (err) => {
+    if (pollInterval) clearInterval(pollInterval);
     statusText.set(`Error: ${err.message}`);
+    progressText.set("Import error");
+    progressVisible.set(false);
     alert({ title: "Error", message: `Failed to spawn file picker: ${err.message}` });
     isLoading.set(false);
   });
 }
 
-// 4. Lay out the application (standard GTK structure)
 App({
   title: "sneakerweb",
   width: 1024,
   height: 768,
   body: VStack(0, [
-    // --- Standard Buttons Toolbar ---
     HStack(8, [
       Button("<- Back", () => {
         if (canGoBackState.value) webviewGoBack(wv);
@@ -121,7 +171,6 @@ App({
         webviewGoForward(wv);
       }),
       Button("Stop", () => {
-        // Stop navigation
       }),
       Button("Refresh", () => {
         webviewReload(wv);
@@ -134,7 +183,6 @@ App({
       })
     ]),
 
-    // --- Address Bar ---
     HStack(6, [
       Text("Address:"),
       TextField(urlInput.value, (newVal: string) => {
@@ -149,7 +197,8 @@ App({
       })
     ]),
 
-    // --- Main Browser content area (expands dynamically to fill height) ---
+    Text(progressText.value),
+
     wv
   ])
 });

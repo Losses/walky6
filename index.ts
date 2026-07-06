@@ -4,6 +4,7 @@ import { join } from "path";
 import { createServer } from "net";
 import { randomUUID } from "crypto";
 
+const PROGRESS_FILE = "/tmp/walking-viewer-import-progress";
 
 let PORT = 3000;
 
@@ -127,7 +128,8 @@ Bun.serve({
           const proc = spawn("./target/release/sneakerweb-wrapper", ["import", tempPath], {
             env: {
               ...process.env,
-              SNEAKERWEB_DIR: SNEAKERWEB_DIR
+              SNEAKERWEB_DIR: SNEAKERWEB_DIR,
+              IMPORT_PROGRESS_FILE: PROGRESS_FILE
             }
           });
           let stderr = "";
@@ -177,7 +179,8 @@ Bun.serve({
           const proc = spawn("./target/release/sneakerweb-wrapper", ["import", filePath], {
             env: {
               ...process.env,
-              SNEAKERWEB_DIR: SNEAKERWEB_DIR
+              SNEAKERWEB_DIR: SNEAKERWEB_DIR,
+              IMPORT_PROGRESS_FILE: PROGRESS_FILE
             }
           });
           let stderr = "";
@@ -206,6 +209,20 @@ Bun.serve({
     }
 
 
+
+    // API: Import progress
+    if (url.pathname === "/api/import-progress" && req.method === "GET") {
+      try {
+        const content = readFileSync(PROGRESS_FILE, "utf8").trim();
+        return new Response(content, {
+          headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
+        });
+      } catch {
+        return new Response(JSON.stringify({ phase: "idle", processed: 0, total: 0, message: "" }), {
+          headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
+        });
+      }
+    }
 
     // API: Get List of Sites/Domains
     if (url.pathname === "/api/sites" && req.method === "GET") {

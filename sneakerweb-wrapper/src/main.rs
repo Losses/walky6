@@ -6,6 +6,8 @@ use std::net::TcpListener as StdTcpListener;
 use std::path::PathBuf;
 use std::process::Command;
 
+const PROGRESS_FILE_PATH: &str = "/tmp/walking-viewer-import-progress";
+
 #[derive(Parser)]
 #[command(version = "1.0.0", about = "Isolated wrapper for sneakerweb")]
 struct WrapperCli {
@@ -119,6 +121,7 @@ async fn handle_import_api(mut stream: TcpStream, wrapper_path: PathBuf, sneaker
                                     .arg("import")
                                     .arg(&tmp_path)
                                     .env("SNEAKERWEB_DIR", &sneakerweb_dir)
+                                    .env("IMPORT_PROGRESS_FILE", PROGRESS_FILE_PATH)
                                     .status()
                                     .map(|s| s.success());
 
@@ -185,6 +188,7 @@ async fn handle_import_api(mut stream: TcpStream, wrapper_path: PathBuf, sneaker
             .arg("import")
             .arg(&tmp_path)
             .env("SNEAKERWEB_DIR", &sneakerweb_dir)
+            .env("IMPORT_PROGRESS_FILE", PROGRESS_FILE_PATH)
             .status()
             .map(|s| s.success());
 
@@ -217,6 +221,7 @@ async fn handle_import_api(mut stream: TcpStream, wrapper_path: PathBuf, sneaker
             .arg("import")
             .arg(&file_path)
             .env("SNEAKERWEB_DIR", &sneakerweb_dir)
+            .env("IMPORT_PROGRESS_FILE", PROGRESS_FILE_PATH)
             .status()
             .map(|s| s.success());
 
@@ -224,6 +229,16 @@ async fn handle_import_api(mut stream: TcpStream, wrapper_path: PathBuf, sneaker
             Ok(true) => "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n\r\n{\"success\":true}",
             _ => "HTTP/1.1 500 ERROR\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n\r\n{\"error\":\"import failed\"}",
         };
+        let _ = stream.write_all(resp.as_bytes()).await;
+    } else if parts.len() >= 2 && parts[0] == "GET" && parts[1] == "/api/import-progress" {
+        let body = match std::fs::read_to_string(PROGRESS_FILE_PATH) {
+            Ok(content) => content,
+            Err(_) => "{\"phase\":\"idle\",\"processed\":0,\"total\":0,\"message\":\"\"}".to_string(),
+        };
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n\r\n{}",
+            body
+        );
         let _ = stream.write_all(resp.as_bytes()).await;
     } else if first_line.starts_with("OPTIONS") {
         let _ = stream.write_all(
@@ -268,7 +283,8 @@ fn main() -> anyhow::Result<()> {
 
             // Single session file with all info
             let session_json = format!(
-                r#"{{"uuid":"{uuid}","sneakerwebPort":{sneakerweb_port},"apiPort":{api_port}}}"#
+                r#"{{"uuid":"{uuid}","sneakerwebPort":{sneakerweb_port},"apiPort":{api_port},"progressFile":"{progress_file}"}}"#,
+                progress_file = PROGRESS_FILE_PATH
             );
             std::fs::write("/tmp/walking-viewer-session", &session_json)?;
 
@@ -322,6 +338,9 @@ fn main() -> anyhow::Result<()> {
                 Some("familiar") => Some(sneakerweb::import::ImportMode::Familiar),
                 _ => None,
             };
+            if std::env::var("IMPORT_PROGRESS_FILE").is_err() {
+                unsafe { std::env::set_var("IMPORT_PROGRESS_FILE", PROGRESS_FILE_PATH); }
+            }
             smol::block_on(async {
                 sneakerweb::import::import_sneak(&sneakerweb::import::ImportArgs { src, mode: import_mode }).await
             })?;
@@ -380,6 +399,7 @@ fn main() -> anyhow::Result<()> {
                                 .arg("import")
                                 .arg(&tmp_path)
                                 .env("SNEAKERWEB_DIR", std::env::var("SNEAKERWEB_DIR").unwrap_or_else(|_| ".sneakerweb_store".to_string()))
+                                .env("IMPORT_PROGRESS_FILE", PROGRESS_FILE_PATH)
                                 .status()
                                 .map(|s| s.success());
                             
