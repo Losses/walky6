@@ -1,0 +1,71 @@
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background: #c0c0c0;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.progress-wrapper {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+}
+
+.progress-window {
+  width: 100%;
+  max-width: 420px;
+  margin:24px;
+}
+
+.progress-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 24px;
+}
+
+.progress-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  width: 100%;
+}
+
+.loading-icon {
+  width: 48px;
+  height: 48px;
+  background-size: 384px 48px;
+  animation: spin 1s steps(8) infinite;
+  flex-shrink: 0;
+}
+
+@keyframes spin {
+  0% {
+    background-position: 0px 0px;
+  }
+
+  100% {
+    background-position: -384px 0px;
+  }
+}
+
+.progress-bar-wrap {
+  flex: 1;
+}
+
+.entry-count {
+  text-align: center;
+  font-size: 11px;
+}
+
+.progress-text {
+  margin: 0;
+}

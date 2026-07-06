@@ -1,18 +1,9 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import "./App.css";
 
-interface ImportProgress {
-  phase: string;
-  processed: number;
-  total: number;
-  processed_entries: number;
-  message: string;
-}
-
 function App() {
-  const [proxyPort, setProxyPort] = useState<number | null>(null);
+  const [baseUrl, setBaseUrl] = useState<string | null>(null);
   const [urlInput, setUrlInput] = useState("");
   const [isImporting, setIsImporting] = useState(false);
   const [canGoBack, setCanGoBack] = useState(false);
@@ -23,39 +14,23 @@ function App() {
   const homePath = "/";
 
   useEffect(() => {
-    invoke<number>("get_proxy_port").then((port) => {
-      setProxyPort(port);
-      const homeUrl = `http://127.0.0.1:${port}/`;
-      setUrlInput(homeUrl);
+    invoke<string>("get_base_url").then((url) => {
+      setBaseUrl(url);
+      setUrlInput(url);
     });
-
-    const unlisten = listen<ImportProgress>("import-progress", (event) => {
-      // Progress is now displayed in the content webview's progress page
-      // We still listen to detect when import is done
-      const { phase } = event.payload;
-      if (phase === "done") {
-        setTimeout(() => {
-          setIsImporting(false);
-          navigateTo(homePath);
-        }, 1500);
-      }
-    });
-
-    return () => {
-      unlisten.then((fn) => fn());
-    };
   }, []);
 
   useEffect(() => {
-    if (proxyPort !== null) {
+    if (baseUrl !== null) {
       navigateToInternal(homePath);
     }
-  }, [proxyPort]);
+  }, [baseUrl]);
 
   const navigateToInternal = useCallback(
     async (path: string) => {
-      if (proxyPort === null) return;
-      const fullUrl = `http://127.0.0.1:${proxyPort}${path}`;
+      if (baseUrl === null) return;
+      const cleanPath = path.startsWith("/") ? path.slice(1) : path;
+      const fullUrl = `${baseUrl}${cleanPath}`;
       setUrlInput(fullUrl);
 
       if (historyIndex.current < historyStack.current.length - 1) {
@@ -74,7 +49,7 @@ function App() {
         console.error("navigate_content failed:", e);
       }
     },
-    [proxyPort],
+    [baseUrl],
   );
 
   const navigateTo = useCallback(
@@ -90,57 +65,59 @@ function App() {
   }, []);
 
   const goBack = useCallback(() => {
-    if (historyIndex.current > 0 && proxyPort !== null) {
+    if (historyIndex.current > 0 && baseUrl !== null) {
       historyIndex.current--;
       const path = historyStack.current[historyIndex.current];
-      setUrlInput(`http://127.0.0.1:${proxyPort}${path}`);
+      const cleanPath = path.startsWith("/") ? path.slice(1) : path;
+      setUrlInput(`${baseUrl}${cleanPath}`);
       invoke("navigate_content", { path }).catch(console.error);
       updateNavButtons();
     }
-  }, [proxyPort, updateNavButtons]);
+  }, [baseUrl, updateNavButtons]);
 
   const goForward = useCallback(() => {
     if (
       historyIndex.current < historyStack.current.length - 1 &&
-      proxyPort !== null
+      baseUrl !== null
     ) {
       historyIndex.current++;
       const path = historyStack.current[historyIndex.current];
-      setUrlInput(`http://127.0.0.1:${proxyPort}${path}`);
+      const cleanPath = path.startsWith("/") ? path.slice(1) : path;
+      setUrlInput(`${baseUrl}${cleanPath}`);
       invoke("navigate_content", { path }).catch(console.error);
       updateNavButtons();
     }
-  }, [proxyPort, updateNavButtons]);
+  }, [baseUrl, updateNavButtons]);
 
   const goHome = useCallback(() => {
     navigateTo(homePath);
   }, [navigateTo, homePath]);
 
   const refresh = useCallback(() => {
-    if (proxyPort !== null) {
+    if (baseUrl !== null) {
       const path = historyStack.current[historyIndex.current] || homePath;
       invoke("navigate_content", { path }).catch(console.error);
     }
-  }, [proxyPort, homePath]);
+  }, [baseUrl, homePath]);
 
   const handleGo = useCallback(() => {
     const destination = urlInput.trim();
-    if (proxyPort === null) return;
+    if (baseUrl === null) return;
 
-    const baseUrl = `http://127.0.0.1:${proxyPort}`;
     if (destination.startsWith(baseUrl)) {
-      const path = destination.slice(baseUrl.length) || "/";
+      const path = "/" + destination.slice(baseUrl.length);
       navigateTo(path);
     } else if (
       !destination.startsWith("http://") &&
-      !destination.startsWith("https://")
+      !destination.startsWith("https://") &&
+      !destination.startsWith("sneaker://")
     ) {
       const path = destination.startsWith("/")
         ? destination
         : `/${destination}`;
       navigateTo(path);
     }
-  }, [urlInput, proxyPort, navigateTo]);
+  }, [urlInput, baseUrl, navigateTo]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -151,28 +128,34 @@ function App() {
     [handleGo],
   );
 
-  const handleImport = useCallback(async () => {
-    setIsImporting(true);
-
+  const handleImport = async () => {
     try {
+      const filePath = await invoke<string>("pick_file");
+      
+      setIsImporting(true);
+      
+      // Store current URL before navigating to progress page
+      const previousUrl = urlInput;
+      
+      // Navigate to progress page
       await invoke("navigate_content", { path: "/__progress__" });
-      await invoke("pick_and_import");
-      // Import completed successfully - navigation handled by event listener
-    } catch (err) {
-      const msg = String(err);
-      if (msg.includes("cancelled")) {
+      setUrlInput("Importing...");
+      
+      // Start import
+      await invoke("import_file", { filePath });
+      
+      // Import completed, navigate back to previous URL
+      setTimeout(() => {
+        const url = new URL(previousUrl);
+        const path = url.pathname + url.search + url.hash;
+        invoke("navigate_content", { path });
         setIsImporting(false);
-        navigateTo(homePath);
-      } else {
-        // Import failed - show error briefly then return home
-        console.error("Import failed:", msg);
-        setTimeout(() => {
-          setIsImporting(false);
-          navigateTo(homePath);
-        }, 3000);
-      }
+      }, 1500);
+    } catch (err) {
+      console.error("Import failed:", err);
+      setIsImporting(false);
     }
-  }, [navigateTo, homePath]);
+  };
 
   return (
     <div className="window app-window">
