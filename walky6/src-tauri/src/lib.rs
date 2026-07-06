@@ -249,8 +249,32 @@ async fn navigate_content(
 }
 
 #[tauri::command]
-fn on_url_changed(app: AppHandle, url: String) {
-    let _ = app.emit("webview-navigated", url);
+async fn go_back_content(content_wv: tauri::State<'_, ContentWebview>) -> Result<(), String> {
+    let wv = content_wv.0.lock().map_err(|e| e.to_string())?;
+    if let Some(ref wv) = *wv {
+        wv.eval("window.history.back()").map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn go_forward_content(content_wv: tauri::State<'_, ContentWebview>) -> Result<(), String> {
+    let wv = content_wv.0.lock().map_err(|e| e.to_string())?;
+    if let Some(ref wv) = *wv {
+        wv.eval("window.history.forward()").map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+struct NavPayload {
+    url: String,
+    action: String,
+}
+
+#[tauri::command]
+fn on_url_changed(app: AppHandle, payload: NavPayload) {
+    let _ = app.emit("webview-navigated", payload);
 }
 
 #[tauri::command]
@@ -540,14 +564,15 @@ pub fn run() {
                     .initialization_script(r#"
                         (function() {
                             if (window !== window.top) return;
-                            function notifyUrlChange() {
+                            function notifyUrlChange(action) {
                                 const url = window.location.href;
                                 const send = () => {
+                                    const payload = { url, action };
                                     if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) {
-                                        window.__TAURI_INTERNALS__.invoke("on_url_changed", { url });
+                                        window.__TAURI_INTERNALS__.invoke("on_url_changed", { payload });
                                         return true;
                                     } else if (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke) {
-                                        window.__TAURI__.core.invoke("on_url_changed", { url });
+                                        window.__TAURI__.core.invoke("on_url_changed", { payload });
                                         return true;
                                     }
                                     return false;
@@ -565,24 +590,27 @@ pub fn run() {
                             const originalPushState = history.pushState;
                             history.pushState = function() {
                                 originalPushState.apply(this, arguments);
-                                notifyUrlChange();
+                                notifyUrlChange('push');
                             };
                             const originalReplaceState = history.replaceState;
                             history.replaceState = function() {
                                 originalReplaceState.apply(this, arguments);
-                                notifyUrlChange();
+                                notifyUrlChange('replace');
                             };
-                            window.addEventListener('popstate', notifyUrlChange);
-                            window.addEventListener('hashchange', notifyUrlChange);
-                            window.addEventListener('load', notifyUrlChange);
-                            document.addEventListener('DOMContentLoaded', notifyUrlChange);
+                            window.addEventListener('popstate', () => notifyUrlChange('pop'));
+                            window.addEventListener('hashchange', () => notifyUrlChange('pop'));
+                            window.addEventListener('load', () => notifyUrlChange('load'));
+                            document.addEventListener('DOMContentLoaded', () => notifyUrlChange('load'));
                         })();
                     "#)
                     .on_page_load(move |webview, payload| {
                         if payload.event() == tauri::webview::PageLoadEvent::Finished {
                             if let Ok(url) = webview.url() {
                                 let url_str = url.to_string();
-                                let _ = app_handle_clone.emit("webview-navigated", url_str);
+                                let _ = app_handle_clone.emit("webview-navigated", NavPayload {
+                                    url: url_str,
+                                    action: "load".to_string(),
+                                });
                             }
                         }
                     });
@@ -642,7 +670,9 @@ pub fn run() {
             navigate_content,
             import_file,
             pick_file,
-            on_url_changed
+            on_url_changed,
+            go_back_content,
+            go_forward_content
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

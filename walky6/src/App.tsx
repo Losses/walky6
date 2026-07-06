@@ -58,8 +58,13 @@ function App() {
   }, [baseUrl, navigateTo]);
 
   useEffect(() => {
-    const unlisten = listen<string>("webview-navigated", (event) => {
-      const newUrl = event.payload;
+    interface NavPayload {
+      url: string;
+      action: 'push' | 'replace' | 'pop' | 'load';
+    }
+
+    const unlisten = listen<NavPayload>("webview-navigated", (event) => {
+      const { url: newUrl, action } = event.payload;
 
       // Handle progress page
       if (newUrl.includes("/__progress__")) {
@@ -75,23 +80,31 @@ function App() {
         return;
       }
 
-      // Check if it's a back navigation
-      if (historyIndex.current > 0 && historyStack.current[historyIndex.current - 1] === newUrl) {
-        historyIndex.current--;
+      // Check if it's a replace navigation
+      if (action === 'replace') {
+        if (historyIndex.current >= 0) {
+          historyStack.current[historyIndex.current] = newUrl;
+        } else {
+          historyStack.current = [newUrl];
+          historyIndex.current = 0;
+        }
         setUrlInput(newUrl);
         updateNavButtons();
         return;
       }
 
-      // Check if it's a forward navigation
-      if (historyIndex.current < historyStack.current.length - 1 && historyStack.current[historyIndex.current + 1] === newUrl) {
-        historyIndex.current++;
-        setUrlInput(newUrl);
-        updateNavButtons();
-        return;
+      // Check if it's a popState navigation (back/forward history traversal)
+      if (action === 'pop') {
+        const index = historyStack.current.indexOf(newUrl);
+        if (index !== -1) {
+          historyIndex.current = index;
+          setUrlInput(newUrl);
+          updateNavButtons();
+          return;
+        }
       }
 
-      // Otherwise, new navigation
+      // Otherwise, new navigation (push or load)
       historyStack.current = historyStack.current.slice(0, historyIndex.current + 1);
       historyStack.current.push(newUrl);
       historyIndex.current = historyStack.current.length - 1;
@@ -106,15 +119,13 @@ function App() {
 
   const goBack = useCallback(() => {
     if (historyIndex.current > 0) {
-      const prevUrl = historyStack.current[historyIndex.current - 1];
-      invoke("navigate_content", { path: prevUrl }).catch(console.error);
+      invoke("go_back_content").catch(console.error);
     }
   }, []);
 
   const goForward = useCallback(() => {
     if (historyIndex.current < historyStack.current.length - 1) {
-      const nextUrl = historyStack.current[historyIndex.current + 1];
-      invoke("navigate_content", { path: nextUrl }).catch(console.error);
+      invoke("go_forward_content").catch(console.error);
     }
   }, []);
 
