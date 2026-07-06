@@ -4,9 +4,8 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "build": "bash scripts/vendor.sh && cargo build --release",
+    "build": "bash scripts/vendor.sh && cargo build --release && npx -y @perryts/perry compile perryts_app.ts -o sneaker-reader",
     "dev": "bash scripts/vendor.sh && cargo build --release && bun run index.ts",
-    "build:perry": "npx -y @perryts/perry compile perryts_app.ts -o sneaker-reader",
     "start": "bun run build && ./target/release/sneakerweb-wrapper launch"
   },
   "perry": {

@@ -4,6 +4,9 @@ import { join } from "path";
 import { createServer } from "net";
 import { randomUUID } from "crypto";
 
+
+let PORT = 3000;
+
 const sessionId = randomUUID();
 const sessionJson = JSON.stringify({ uuid: sessionId, sneakerwebPort: null, apiPort: PORT });
 writeFileSync("/tmp/walking-viewer-session", sessionJson);
@@ -26,7 +29,6 @@ function getFreePort(): Promise<number> {
   });
 }
 
-let PORT = 3000;
 try {
   PORT = await getFreePort();
 } catch (e) {
@@ -96,16 +98,23 @@ Bun.serve({
     // API: Import .snk file
     if (url.pathname === "/api/import" && req.method === "POST") {
       try {
-        const formData = await req.formData();
-        const file = formData.get("file") as Blob | null;
-        if (!file) {
-          return new Response(JSON.stringify({ error: "No file uploaded" }), {
-            status: 400,
-            headers: { "Content-Type": "application/json" }
-          });
+        const contentType = req.headers.get("content-type") || "";
+
+        let buffer: ArrayBuffer;
+        if (contentType.includes("multipart/form-data")) {
+          const formData = await req.formData();
+          const file = formData.get("file") as Blob | null;
+          if (!file) {
+            return new Response(JSON.stringify({ error: "No file uploaded" }), {
+              status: 400,
+              headers: { "Content-Type": "application/json" }
+            });
+          }
+          buffer = await file.arrayBuffer();
+        } else {
+          buffer = await req.arrayBuffer();
         }
 
-        const buffer = await file.arrayBuffer();
         const tempDir = join(import.meta.dir, "temp");
         if (!existsSync(tempDir)) {
           mkdirSync(tempDir, { recursive: true });
@@ -133,12 +142,12 @@ Bun.serve({
 
             if (code === 0) {
               resolve(new Response(JSON.stringify({ success: true }), {
-                headers: { "Content-Type": "application/json" }
+                headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
               }));
             } else {
               resolve(new Response(JSON.stringify({ error: stderr.trim() || "Import failed" }), {
                 status: 500,
-                headers: { "Content-Type": "application/json" }
+                headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
               }));
             }
           });
@@ -146,7 +155,7 @@ Bun.serve({
       } catch (err: unknown) {
         return new Response(JSON.stringify({ error: String(err) }), {
           status: 500,
-          headers: { "Content-Type": "application/json" }
+          headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
         });
       }
     }

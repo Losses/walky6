@@ -31,6 +31,8 @@ enum WrapperCommands {
     Export { dest: PathBuf, #[arg(short, long)] collection: Option<PathBuf> },
     Serve,
     Launch,
+    FileDialog,
+    PickAndImport,
 }
 
 fn get_free_port() -> u16 {
@@ -91,7 +93,109 @@ async fn handle_import_api(mut stream: TcpStream, wrapper_path: PathBuf, sneaker
     let first_line = lines.first().unwrap_or(&"");
     let parts: Vec<&str> = first_line.split_whitespace().collect();
 
-    if parts.len() >= 2 && parts[0] == "POST" && parts[1] == "/api/import-path" {
+    if parts.len() >= 2 && parts[0] == "POST" && parts[1] == "/pick-file" {
+        eprintln!("[pick-file] Spawning file dialog subprocess...");
+        
+        let output = Command::new(&wrapper_path)
+            .arg("file-dialog")
+            .env("SNEAKERWEB_DIR", &sneakerweb_dir)
+            .output();
+        
+        let resp = match output {
+            Ok(output) => {
+                if output.status.success() {
+                    let file_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    eprintln!("[pick-file] File selected: {}", file_path);
+                    
+                    let path = PathBuf::from(&file_path);
+                    match std::fs::read(&path) {
+                        Ok(data) => {
+                            let tmp = std::env::temp_dir().join(format!("sneakerweb-import-{}.snk", random_uuid()));
+                            if let Err(e) = std::fs::write(&tmp, &data) {
+                                format!("HTTP/1.1 500 ERROR\r\nContent-Type: application/json\r\n\r\n{{\"error\":\"failed to save temp file: {}\"}}", e)
+                            } else {
+                                let tmp_path = tmp.to_string_lossy().to_string();
+                                let status = Command::new(&wrapper_path)
+                                    .arg("import")
+                                    .arg(&tmp_path)
+                                    .env("SNEAKERWEB_DIR", &sneakerweb_dir)
+                                    .status()
+                                    .map(|s| s.success());
+
+                                let _ = std::fs::remove_file(&tmp);
+
+                                match status {
+                                    Ok(true) => "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n\r\n{\"success\":true}".to_string(),
+                                    Ok(false) => "HTTP/1.1 500 ERROR\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n\r\n{\"error\":\"import failed\"}".to_string(),
+                                    Err(e) => format!("HTTP/1.1 500 ERROR\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n\r\n{{\"error\":\"{}\"}}", e),
+                                }
+                            }
+                        }
+                        Err(e) => format!("HTTP/1.1 500 ERROR\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n\r\n{{\"error\":\"Failed to read file: {}\"}}", e),
+                    }
+                } else {
+                    eprintln!("[pick-file] File dialog cancelled or failed");
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n\r\n{\"cancelled\":true}".to_string()
+                }
+            }
+            Err(e) => {
+                eprintln!("[pick-file] Failed to spawn file dialog: {}", e);
+                format!("HTTP/1.1 500 ERROR\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n\r\n{{\"error\":\"Failed to spawn file dialog: {}\"}}", e)
+            }
+        };
+        let _ = stream.write_all(resp.as_bytes()).await;
+    } else if parts.len() >= 2 && parts[0] == "POST" && parts[1] == "/api/import" {
+        // Read Content-Length
+        let content_length: usize = lines.iter()
+            .find(|l| l.to_lowercase().starts_with("content-length:"))
+            .and_then(|l| l.split(':').nth(1))
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(0);
+
+        if content_length == 0 {
+            let _ = stream.write_all(
+                b"HTTP/1.1 400 BAD REQUEST\r\nContent-Type: application/json\r\n\r\n{\"error\":\"empty body\"}"
+            ).await;
+            return;
+        }
+
+        // Read the body
+        let body_start = req_str.find("\r\n\r\n").map(|i| i + 4).unwrap_or(0);
+        let mut body = buf[body_start..].to_vec();
+        while body.len() < content_length {
+            let _ = buf_reader.fill_buf().await;
+            let b = buf_reader.buffer();
+            let needed = content_length - body.len();
+            body.extend_from_slice(&b[..needed.min(b.len())]);
+            buf_reader.consume(needed.min(b.len()));
+        }
+        body.truncate(content_length);
+
+        // Save to temp file
+        let tmp = std::env::temp_dir().join(format!("sneakerweb-import-{}.snk", random_uuid()));
+        if std::fs::write(&tmp, &body).is_err() {
+            let _ = stream.write_all(
+                b"HTTP/1.1 500 ERROR\r\nContent-Type: application/json\r\n\r\n{\"error\":\"failed to save temp file\"}"
+            ).await;
+            return;
+        }
+
+        let tmp_path = tmp.to_string_lossy().to_string();
+        let status = Command::new(&wrapper_path)
+            .arg("import")
+            .arg(&tmp_path)
+            .env("SNEAKERWEB_DIR", &sneakerweb_dir)
+            .status()
+            .map(|s| s.success());
+
+        let _ = std::fs::remove_file(&tmp);
+
+        let resp = match status {
+            Ok(true) => "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n\r\n{\"success\":true}",
+            _ => "HTTP/1.1 500 ERROR\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n\r\n{\"error\":\"import failed\"}",
+        };
+        let _ = stream.write_all(resp.as_bytes()).await;
+    } else if parts.len() >= 2 && parts[0] == "POST" && parts[1] == "/api/import-path" {
         let body_start = req_str.find("\r\n\r\n").map(|i| i + 4).unwrap_or(0);
         let body = &req_str[body_start..];
 
@@ -242,6 +346,69 @@ fn main() -> anyhow::Result<()> {
                         eprintln!("Port {p} failed: {err}");
                         port = None;
                     }
+                }
+            }
+        }
+        WrapperCommands::FileDialog => {
+            let file = rfd::FileDialog::new()
+                .add_filter("Sneaker files", &["snk"])
+                .set_title("Import .snk file")
+                .pick_file();
+            match file {
+                Some(path) => println!("{}", path.display()),
+                None => std::process::exit(1),
+            }
+        }
+        WrapperCommands::PickAndImport => {
+            let file = rfd::FileDialog::new()
+                .add_filter("Sneaker files", &["snk"])
+                .set_title("Import .snk file")
+                .pick_file();
+            
+            match file {
+                Some(path) => {
+                    match std::fs::read(&path) {
+                        Ok(data) => {
+                            let tmp = std::env::temp_dir().join(format!("sneakerweb-import-{}.snk", random_uuid()));
+                            if let Err(e) = std::fs::write(&tmp, &data) {
+                                eprintln!("Failed to save temp file: {}", e);
+                                std::process::exit(1);
+                            }
+                            
+                            let tmp_path = tmp.to_string_lossy().to_string();
+                            let status = Command::new(std::env::current_exe().unwrap())
+                                .arg("import")
+                                .arg(&tmp_path)
+                                .env("SNEAKERWEB_DIR", std::env::var("SNEAKERWEB_DIR").unwrap_or_else(|_| ".sneakerweb_store".to_string()))
+                                .status()
+                                .map(|s| s.success());
+                            
+                            let _ = std::fs::remove_file(&tmp);
+                            
+                            match status {
+                                Ok(true) => {
+                                    println!("success");
+                                    std::process::exit(0);
+                                }
+                                Ok(false) => {
+                                    eprintln!("Import failed");
+                                    std::process::exit(1);
+                                }
+                                Err(e) => {
+                                    eprintln!("Failed to run import: {}", e);
+                                    std::process::exit(1);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to read file: {}", e);
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                None => {
+                    eprintln!("File selection cancelled");
+                    std::process::exit(1);
                 }
             }
         }

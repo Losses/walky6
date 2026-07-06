@@ -13,19 +13,17 @@ import {
   webviewGoForward,
   webviewCanGoBack,
   alert,
-  openFileDialog
 } from "perry/ui";
 import { readFileSync } from "fs";
+import { spawn } from "child_process";
 
 // Read session file (single JSON with all ports)
 let sneakerwebPort = "8080";
-let apiPort = "3000";
 
 try {
   const raw = readFileSync("/tmp/walking-viewer-session", "utf8").trim();
   const session = JSON.parse(raw);
   if (session.sneakerwebPort) sneakerwebPort = String(session.sneakerwebPort);
-  if (session.apiPort) apiPort = String(session.apiPort);
 } catch (e) {}
 
 // 1. Reactive states for the browser window
@@ -36,21 +34,23 @@ const statusText = State("Done");
 const isLoading = State(false);
 const canGoBackState = State(false);
 
-// 2. Initialize the WebView widget
+// 2. Initialize the main WebView widget
 const wv = WebView({
   url: currentUrl.value,
   width: -1,
   height: -1,
   onShouldNavigate: (url: string) => {
+    if (url.startsWith("sneakerweb://")) {
+      return false;
+    }
     urlInput.set(url);
     statusText.set(`Opening page ${url}...`);
     isLoading.set(true);
-    return true; // Allow navigation
+    return true;
   },
   onLoaded: () => {
     isLoading.set(false);
     statusText.set("Done");
-    // Update navigation states
     currentUrl.set(urlInput.value);
     canGoBackState.set(webviewCanGoBack(wv) === 1);
   },
@@ -60,60 +60,55 @@ const wv = WebView({
   }
 });
 
-// 3. File import handler using native openFileDialog (without filters to prevent native TypeErrors)
-async function handleImport() {
+// 3. Handle import via native file picker (direct subprocess)
+function handleImport() {
+  console.log("[handleImport] Spawning pick-and-import subprocess...");
   statusText.set("Opening file dialog...");
-  try {
-    const rawPath = await openFileDialog({
-      title: "Open .snk drop file"
-    });
+  isLoading.set(true);
 
-    if (!rawPath) {
-      statusText.set("Done");
-      return;
+  const wrapperPath = "./target/release/sneakerweb-wrapper";
+  const proc = spawn(wrapperPath, ["pick-and-import"], {
+    env: {
+      ...process.env,
+      SNEAKERWEB_DIR: "./.sneakerweb_store"
     }
+  });
 
-    // Clean URI file:// scheme if present
-    let filePath = rawPath.trim();
-    if (filePath.startsWith("file://")) {
-      filePath = filePath.slice(7);
-    }
+  let stdout = "";
+  let stderr = "";
 
-    isLoading.set(true);
-    statusText.set(`Importing ${filePath}...`);
+  proc.stdout.on("data", (data) => {
+    stdout += data.toString();
+  });
 
-    const response = await fetch(`http://127.0.0.1:${apiPort}/api/import-path`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ filePath })
-    });
+  proc.stderr.on("data", (data) => {
+    stderr += data.toString();
+  });
 
-    isLoading.set(false);
-    if (response.ok) {
+  proc.on("close", (code) => {
+    if (code === 0) {
       statusText.set("Successfully imported!");
       alert({ title: "Import Succeeded", message: "Drop imported successfully!" });
-      webviewReload(wv);
+      webviewLoadUrl(wv, homeUrl);
+    } else if (stderr.includes("cancelled")) {
+      statusText.set("Done");
     } else {
-      const errData = (await response.json()) as any;
-      const errMsg = errData.error || "Import failed";
-      statusText.set(`Import failed: ${errMsg}`);
-      alert({
-        title: "Import Failed",
-        message: `Could not import drop:\n${errMsg}`
-      });
+      statusText.set(`Import failed: ${stderr.trim() || "unknown error"}`);
+      alert({ title: "Import Failed", message: `Could not import drop:\n${stderr.trim() || "unknown error"}` });
     }
-  } catch (error: any) {
     isLoading.set(false);
-    statusText.set("Error importing file.");
-    alert({ title: "Error", message: error.message });
-  }
+  });
+
+  proc.on("error", (err) => {
+    statusText.set(`Error: ${err.message}`);
+    alert({ title: "Error", message: `Failed to spawn file picker: ${err.message}` });
+    isLoading.set(false);
+  });
 }
 
 // 4. Lay out the application (standard GTK structure)
 App({
-  title: "sneakerweb - Microsoft Internet Explorer",
+  title: "sneakerweb",
   width: 1024,
   height: 768,
   body: VStack(0, [

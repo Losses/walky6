@@ -8,3 +8,4 @@ sneakerweb = { path = "../vendor/sneakerweb" }
 clap = { version = "4.6.0", features = ["derive"] }
 anyhow = "1.0.102"
 smol = "2.0.2"
+rfd = { version = "0.15", features = ["xdg-portal"] }
