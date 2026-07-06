@@ -56,28 +56,37 @@ function App() {
     }
   }, [proxyPort]);
 
-  const navigateToInternal = useCallback(async (path: string) => {
-    if (proxyPort === null) return;
-    const fullUrl = `http://127.0.0.1:${proxyPort}${path}`;
-    setUrlInput(fullUrl);
+  const navigateToInternal = useCallback(
+    async (path: string) => {
+      if (proxyPort === null) return;
+      const fullUrl = `http://127.0.0.1:${proxyPort}${path}`;
+      setUrlInput(fullUrl);
 
-    if (historyIndex.current < historyStack.current.length - 1) {
-      historyStack.current = historyStack.current.slice(0, historyIndex.current + 1);
-    }
-    historyStack.current.push(path);
-    historyIndex.current = historyStack.current.length - 1;
-    updateNavButtons();
+      if (historyIndex.current < historyStack.current.length - 1) {
+        historyStack.current = historyStack.current.slice(
+          0,
+          historyIndex.current + 1,
+        );
+      }
+      historyStack.current.push(path);
+      historyIndex.current = historyStack.current.length - 1;
+      updateNavButtons();
 
-    try {
-      await invoke("navigate_content", { path });
-    } catch (e) {
-      console.error("navigate_content failed:", e);
-    }
-  }, [proxyPort]);
+      try {
+        await invoke("navigate_content", { path });
+      } catch (e) {
+        console.error("navigate_content failed:", e);
+      }
+    },
+    [proxyPort],
+  );
 
-  const navigateTo = useCallback((path: string) => {
-    navigateToInternal(path);
-  }, [navigateToInternal]);
+  const navigateTo = useCallback(
+    (path: string) => {
+      navigateToInternal(path);
+    },
+    [navigateToInternal],
+  );
 
   const updateNavButtons = useCallback(() => {
     setCanGoBack(historyIndex.current > 0);
@@ -95,7 +104,10 @@ function App() {
   }, [proxyPort, updateNavButtons]);
 
   const goForward = useCallback(() => {
-    if (historyIndex.current < historyStack.current.length - 1 && proxyPort !== null) {
+    if (
+      historyIndex.current < historyStack.current.length - 1 &&
+      proxyPort !== null
+    ) {
       historyIndex.current++;
       const path = historyStack.current[historyIndex.current];
       setUrlInput(`http://127.0.0.1:${proxyPort}${path}`);
@@ -123,17 +135,25 @@ function App() {
     if (destination.startsWith(baseUrl)) {
       const path = destination.slice(baseUrl.length) || "/";
       navigateTo(path);
-    } else if (!destination.startsWith("http://") && !destination.startsWith("https://")) {
-      const path = destination.startsWith("/") ? destination : `/${destination}`;
+    } else if (
+      !destination.startsWith("http://") &&
+      !destination.startsWith("https://")
+    ) {
+      const path = destination.startsWith("/")
+        ? destination
+        : `/${destination}`;
       navigateTo(path);
     }
   }, [urlInput, proxyPort, navigateTo]);
 
-  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (e.key === "Enter") {
-      handleGo();
-    }
-  }, [handleGo]);
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.key === "Enter") {
+        handleGo();
+      }
+    },
+    [handleGo],
+  );
 
   const handleImport = useCallback(async () => {
     setIsImporting(true);
@@ -167,47 +187,72 @@ function App() {
   }, [refresh]);
 
   return (
-    <div className="app">
+    <div className="window app-window">
       <div className="toolbar">
-        <button onClick={goBack} disabled={!canGoBack} title="Back">
-          {"<"} Back
+        <button
+          onClick={goBack}
+          disabled={!canGoBack}
+          className="toolbar-btn"
+          title="Back"
+        >
+          <img src="/icons/back.svg" alt="" />
+          <span>Back</span>
         </button>
-        <button onClick={goForward} disabled={!canGoForward} title="Forward">
-          Forward {">"}
+        <button
+          onClick={goForward}
+          disabled={!canGoForward}
+          className="toolbar-btn"
+          title="Forward"
+        >
+          <img src="/icons/forward.svg" alt="" />
+          <span>Forward</span>
         </button>
-        <button onClick={refresh} title="Refresh">
-          Refresh
+        <button onClick={refresh} className="toolbar-btn" title="Refresh">
+          <img src="/icons/refresh.svg" alt="" />
+          <span>Refresh</span>
         </button>
-        <button onClick={goHome} title="Home">
-          Home
+        <button onClick={goHome} className="toolbar-btn" title="Home">
+          <img src="/icons/home.svg" alt="" />
+          <span>Home</span>
         </button>
-        <button onClick={handleImport} disabled={isImporting} title="Import .snk file">
-          Import .snk
+        <button
+          onClick={handleImport}
+          disabled={isImporting}
+          className="toolbar-btn"
+          title="Import .snk file"
+        >
+          <img src="/icons/import.svg" alt="" />
+          <span>Import</span>
         </button>
       </div>
-      <div className="address-bar">
-        <span className="address-label">Address:</span>
+      <div className="field-row address-bar">
+        <label htmlFor="addr-input">Address</label>
         <input
+          id="addr-input"
           type="text"
           value={urlInput}
           onChange={(e) => setUrlInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          className="address-input"
         />
         <button onClick={handleGo} className="go-btn">
-          Go
+          <span className="label">Go</span>
         </button>
       </div>
       {isImporting && (
         <div className="import-overlay">
-          <div className="import-box">
-            <div className="progress-bar-container">
-              <div
-                className="progress-bar-fill"
-                style={{ width: `${progressPercent}%` }}
-              />
+          <div className="window" style={{ width: 360 }}>
+            <div className="title-bar">
+              <div className="title-bar-text">Importing...</div>
             </div>
-            <p className="progress-label">{progressLabel}</p>
+            <div className="window-body" style={{ textAlign: "center" }}>
+              <div className="progress-indicator" style={{ marginBottom: 8 }}>
+                <span
+                  className="progress-indicator-bar"
+                  style={{ width: `${progressPercent}%` }}
+                />
+              </div>
+              <p>{progressLabel}</p>
+            </div>
           </div>
         </div>
       )}

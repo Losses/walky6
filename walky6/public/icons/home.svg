@@ -1,0 +1,35 @@
+<svg width="64" height="64" viewBox="0 0 6528 6528" xmlns="http://www.w3.org/2000/svg">
+<path id="shape_0" d="M 4080 2244 C 4080 2244 4080 1632 4080 1632 C 4080 1632 2142 204 2142 204 C 2142 204 204 1632 204 1632 C 204 1632 204 2244 204 2244 C 204 2244 2142 816 2142 816 C 2142 816 4080 2244 4080 2244 Z M 4080 4080 C 4080 4080 4080 3468 4080 3468 C 4080 3468 204 3468 204 3468 C 204 3468 204 4080 204 4080 C 204 4080 4080 4080 4080 4080 Z M 3468 3264 C 3468 3264 3468 2040 3468 2040 C 3468 2040 2142 1020 2142 1020 C 2142 1020 816 2040 816 2040 C 816 2040 816 3264 816 3264 C 816 3264 3468 3264 3468 3264 Z " transform="matrix(1.333328 0.000000 0.000000 1.333328 544.00 544.00)" style="fill:none;stroke:#000000;stroke-width:408;stroke-linejoin:round;stroke-linecap:butt" stroke-opacity="0.4" />
+<path id="shape_1" d="M 3468 3264 C 3468 3264 3468 2040 3468 2040 C 3468 2040 2142 1020 2142 1020 C 2142 1020 816 2040 816 2040 C 816 2040 816 3264 816 3264 C 816 3264 3468 3264 3468 3264 Z " transform="matrix(1.333328 0.000000 0.000000 1.333328 272.00 272.00)" style="fill:none;stroke:#545454;stroke-width:408;stroke-linejoin:miter;stroke-linecap:butt" />
+<g>
+<defs>
+<linearGradient id="grad1" gradientUnits="userSpaceOnUse" gradientTransform="matrix(0.000000 0.171875 -1.000000 0.000000 6324.00 2142.00)" x1="-6528" x2="6528" y1="-6528" y2="-6528">
+<stop offset="0.00%" stop-color="#ffffff" />
+<stop offset="100.00%" stop-color="#e5e5e5" />
+</linearGradient>
+</defs>
+<path id="shape_2" d="M 3468 3264 C 3468 3264 3468 2040 3468 2040 C 3468 2040 2142 1020 2142 1020 C 2142 1020 816 2040 816 2040 C 816 2040 816 3264 816 3264 C 816 3264 3468 3264 3468 3264 Z " transform="matrix(1.333328 0.000000 0.000000 1.333328 272.00 272.00)" style="fill:url(#grad1);stroke:none" />
+</g>
+<path id="shape_3" d="M 4080 2244 C 4080 2244 4080 1632 4080 1632 C 4080 1632 2142 204 2142 204 C 2142 204 204 1632 204 1632 C 204 1632 204 2244 204 2244 C 204 2244 2142 816 2142 816 C 2142 816 4080 2244 4080 2244 Z " transform="matrix(1.333328 0.000000 0.000000 1.333328 272.00 272.00)" style="fill:none;stroke:#800000;stroke-width:408;stroke-linejoin:round;stroke-linecap:butt" />
+<g>
+<defs>
+<linearGradient id="grad2" gradientUnits="userSpaceOnUse" gradientTransform="matrix(0.000000 0.156250 -1.000000 0.000000 6528.00 1224.00)" x1="-6528" x2="6528" y1="-6528" y2="-6528">
+<stop offset="0.00%" stop-color="#ffabab" />
+<stop offset="100.00%" stop-color="#d90000" />
+</linearGradient>
+</defs>
+<path id="shape_4" d="M 4080 2244 C 4080 2244 4080 1632 4080 1632 C 4080 1632 2142 204 2142 204 C 2142 204 204 1632 204 1632 C 204 1632 204 2244 204 2244 C 204 2244 2142 816 2142 816 C 2142 816 4080 2244 4080 2244 Z " transform="matrix(1.333328 0.000000 0.000000 1.333328 272.00 272.00)" style="fill:url(#grad2);stroke:none" />
+</g>
+<path id="shape_5" d="M 4080 4080 C 4080 4080 4080 3468 4080 3468 C 4080 3468 204 3468 204 3468 C 204 3468 204 4080 204 4080 C 204 4080 4080 4080 4080 4080 Z " transform="matrix(1.333328 0.000000 0.000000 1.333328 272.00 272.00)" style="fill:none;stroke:#005900;stroke-width:408;stroke-linejoin:round;stroke-linecap:butt" />
+<g>
+<defs>
+<linearGradient id="grad3" gradientUnits="userSpaceOnUse" gradientTransform="matrix(0.000000 0.046875 -1.000000 0.000000 6528.00 3774.00)" x1="-6528" x2="6528" y1="-6528" y2="-6528">
+<stop offset="0.00%" stop-color="#80ff80" />
+<stop offset="100.00%" stop-color="#00b200" />
+</linearGradient>
+</defs>
+<path id="shape_6" d="M 4080 4080 C 4080 4080 4080 3468 4080 3468 C 4080 3468 204 3468 204 3468 C 204 3468 204 4080 204 4080 C 204 4080 4080 4080 4080 4080 Z " transform="matrix(1.333328 0.000000 0.000000 1.333328 272.00 272.00)" style="fill:url(#grad3);stroke:none" />
+</g>
+<path id="shape_7" d="M 1224 2040 C 1224 2040 1224 3264 1224 3264 C 1224 3264 1836 3264 1836 3264 C 1836 3264 1836 2040 1836 2040 C 1836 2040 1224 2040 1224 2040 Z " transform="matrix(1.333328 0.000000 0.000000 1.333328 272.00 272.00)" style="fill:#806040;stroke:none" />
+<path id="shape_8" d="M 1224 2040 C 1224 2040 1224 3264 1224 3264 C 1224 3264 1836 3264 1836 3264 C 1836 3264 1836 2040 1836 2040 C 1836 2040 1224 2040 1224 2040 Z " transform="matrix(1.777771 0.000000 0.000000 0.666664 1088.00 1632.00)" style="fill:#806040;stroke:none" />
+</svg>

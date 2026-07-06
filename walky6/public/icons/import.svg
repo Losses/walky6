@@ -1,0 +1,25 @@
+<svg width="64" height="64" viewBox="0 0 6528 6528" xmlns="http://www.w3.org/2000/svg">
+<path id="shape_0" d="M 408 3876 C 408 3876 3876 3876 3876 3876 C 3876 3876 3672 408 3672 408 C 3672 408 2856 408 2856 408 C 2856 408 2652 816 2652 816 C 2652 816 612 816 612 816 C 612 816 408 3876 408 3876 Z M 407 3876 C 407 3876 203 2244 203 2244 C 203 2244 4080 2244 4080 2244 C 4080 2244 3876 3876 3876 3876 C 3876 3876 407 3876 407 3876 Z M 408 2040 C 408 2040 408 1224 408 1224 C 408 1224 3876 1224 3876 1224 C 3876 1224 3876 2040 3876 2040 " transform="matrix(1.333328 0.000000 0.000000 1.333328 544.00 544.00)" style="fill:none;stroke:#000000;stroke-width:408;stroke-linejoin:round;stroke-linecap:round" stroke-opacity="0.4" />
+<path id="shape_1" d="M 408 3876 C 408 3876 3876 3876 3876 3876 C 3876 3876 3672 408 3672 408 C 3672 408 2856 408 2856 408 C 2856 408 2652 816 2652 816 C 2652 816 612 816 612 816 C 612 816 408 3876 408 3876 Z " transform="matrix(1.333328 0.000000 0.000000 1.333328 272.00 272.00)" style="fill:none;stroke:#bf5000;stroke-width:408;stroke-linejoin:round;stroke-linecap:round" />
+<path id="shape_2" d="M 408 3876 C 408 3876 3876 3876 3876 3876 C 3876 3876 3672 408 3672 408 C 3672 408 2856 408 2856 408 C 2856 408 2652 816 2652 816 C 2652 816 612 816 612 816 C 612 816 408 3876 408 3876 Z " transform="matrix(1.333328 0.000000 0.000000 1.333328 272.00 272.00)" style="fill:#ffc800;stroke:none" />
+<path id="shape_3" d="M 408 2040 C 408 2040 408 1224 408 1224 C 408 1224 3876 1224 3876 1224 C 3876 1224 3876 2040 3876 2040 " transform="matrix(1.333328 0.000000 0.000000 1.333328 272.00 272.00)" style="fill:none;stroke:#000080;stroke-width:408;stroke-linejoin:round;stroke-linecap:round" />
+<g>
+<defs>
+<linearGradient id="grad1" gradientUnits="userSpaceOnUse" gradientTransform="matrix(0.000000 0.062500 -1.000000 0.000000 6528.00 1632.00)" x1="-6528" x2="6528" y1="-6528" y2="-6528">
+<stop offset="0.00%" stop-color="#ffffff" />
+<stop offset="100.00%" stop-color="#d9d9ff" />
+</linearGradient>
+</defs>
+<path id="shape_4" d="M 408 2040 C 408 2040 408 1224 408 1224 C 408 1224 3876 1224 3876 1224 C 3876 1224 3876 2040 3876 2040 " transform="matrix(1.333328 0.000000 0.000000 1.333328 272.00 272.00)" style="fill:url(#grad1);stroke:none" />
+</g>
+<path id="shape_5" d="M 407 3876 C 407 3876 203 2244 203 2244 C 203 2244 4080 2244 4080 2244 C 4080 2244 3876 3876 3876 3876 C 3876 3876 407 3876 407 3876 Z " transform="matrix(1.333328 0.000000 0.000000 1.333328 272.00 272.00)" style="fill:none;stroke:#bf5000;stroke-width:408;stroke-linejoin:round;stroke-linecap:round" />
+<g>
+<defs>
+<linearGradient id="grad2" gradientUnits="userSpaceOnUse" gradientTransform="matrix(0.000000 0.125000 -1.000000 0.000000 6528.00 3060.00)" x1="-6528" x2="6528" y1="-6528" y2="-6528">
+<stop offset="0.00%" stop-color="#ffea80" />
+<stop offset="100.00%" stop-color="#ffbb00" />
+</linearGradient>
+</defs>
+<path id="shape_6" d="M 407 3876 C 407 3876 203 2244 203 2244 C 203 2244 4080 2244 4080 2244 C 4080 2244 3876 3876 3876 3876 C 3876 3876 407 3876 407 3876 Z " transform="matrix(1.333328 0.000000 0.000000 1.333328 272.00 272.00)" style="fill:url(#grad2);stroke:none" />
+</g>
+</svg>

@@ -6,6 +6,8 @@ use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
 
+const TOOLBAR_H: u32 = 90;
+
 pub struct SneakerwebState {
     pub sneakerweb_port: u16,
     pub proxy_port: u16,
@@ -388,15 +390,14 @@ pub fn run() {
                 .parse()
                 .expect("invalid home URL");
 
-            let toolbar_h: u32 = 66;
             let win_size = window.inner_size().unwrap_or(tauri::PhysicalSize::new(1024, 768));
-            let content_h = win_size.height.saturating_sub(toolbar_h);
+            let content_h = win_size.height.saturating_sub(TOOLBAR_H);
 
             let main_webview = window
                 .add_child(
                     tauri::webview::WebviewBuilder::new("main", tauri::WebviewUrl::App("index.html".into())),
                     tauri::PhysicalPosition::new(0u32, 0u32),
-                    tauri::PhysicalSize::new(win_size.width, toolbar_h),
+                    tauri::PhysicalSize::new(win_size.width, TOOLBAR_H),
                 )
                 .expect("failed to create main webview");
 
@@ -408,7 +409,7 @@ pub fn run() {
             let webview = window
                 .add_child(
                     builder,
-                    tauri::PhysicalPosition::new(0u32, toolbar_h),
+                    tauri::PhysicalPosition::new(0u32, TOOLBAR_H),
                     tauri::PhysicalSize::new(win_size.width, content_h),
                 )
                 .expect("failed to add content webview");
@@ -427,14 +428,13 @@ pub fn run() {
             let main_wv = main_webview.clone();
             window.on_window_event(move |event| {
                 if let tauri::WindowEvent::Resized(size) = event {
-                    let toolbar_h_physical: u32 = 66;
                     let _ = main_wv.set_position(tauri::PhysicalPosition::new(0u32, 0u32));
-                    let _ = main_wv.set_size(tauri::PhysicalSize::new(size.width, toolbar_h_physical));
+                    let _ = main_wv.set_size(tauri::PhysicalSize::new(size.width, TOOLBAR_H));
                     if let Some(ref wv) = *wv_arc.lock().unwrap() {
-                        let _ = wv.set_position(tauri::PhysicalPosition::new(0u32, toolbar_h_physical));
+                        let _ = wv.set_position(tauri::PhysicalPosition::new(0u32, TOOLBAR_H));
                         let _ = wv.set_size(tauri::PhysicalSize::new(
                             size.width,
-                            size.height.saturating_sub(toolbar_h_physical),
+                            size.height.saturating_sub(TOOLBAR_H),
                         ));
                     }
                 }
@@ -462,7 +462,7 @@ fn fix_linux_webview_packing(window: &tauri::window::Window) {
                 for (index, child) in children.iter().enumerate() {
                     if index == 0 {
                         // Set explicit size request for the toolbar to prevent it from collapsing to 0 height
-                        child.set_size_request(-1, 66);
+                        child.set_size_request(-1, TOOLBAR_H as i32);
                         // Toolbar webview: expand = false, fill = false
                         container_box.set_child_packing(child, false, false, 0, gtk::PackType::Start);
                     } else if index == 1 {
