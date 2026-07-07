@@ -235,7 +235,7 @@ async fn navigate_content(
     content_wv: tauri::State<'_, ContentWebview>,
     path: String,
 ) -> Result<(), String> {
-    let mut parsed = if path.starts_with("sneaker://") {
+    let parsed = if path.starts_with("sneaker://") {
         url::Url::parse(&path).map_err(|e| format!("invalid URL: {e}"))?
     } else {
         let base = "sneaker://home";
@@ -244,18 +244,17 @@ async fn navigate_content(
     };
 
     #[cfg(target_os = "windows")]
-    {
-        if parsed.scheme() == "sneaker" {
-            let host = parsed.host_str().unwrap_or("home");
-            let mut path_and_query = parsed.path().to_string();
-            if let Some(q) = parsed.query() {
-                path_and_query.push('?');
-                path_and_query.push_str(q);
-            }
-            let new_url_str = format!("http://sneaker.localhost/{}{}", host, path_and_query);
-            parsed = url::Url::parse(&new_url_str).map_err(|e| e.to_string())?;
-        }
-    }
+    let parsed = if parsed.scheme() == "sneaker" {
+        let host = parsed.host_str().unwrap_or("home");
+        let path_and_query = match parsed.query() {
+            Some(q) => format!("{}?{}", parsed.path(), q),
+            None => parsed.path().to_string(),
+        };
+        url::Url::parse(&format!("http://sneaker.localhost/{}{}", host, path_and_query))
+            .map_err(|e| e.to_string())?
+    } else {
+        parsed
+    };
 
     let wv = content_wv.0.lock().map_err(|e| e.to_string())?;
     if let Some(ref wv) = *wv {
@@ -289,18 +288,20 @@ struct NavPayload {
 }
 
 #[tauri::command]
-fn on_url_changed(app: AppHandle, mut payload: NavPayload) {
+fn on_url_changed(app: AppHandle, payload: NavPayload) {
     #[cfg(target_os = "windows")]
-    {
-        if payload.url.starts_with("http://sneaker.localhost/") {
-            let without_prefix = &payload.url["http://sneaker.localhost/".len()..];
+    let payload = {
+        let mut p = payload;
+        if p.url.starts_with("http://sneaker.localhost/") {
+            let without_prefix = &p.url["http://sneaker.localhost/".len()..];
             if let Some((first_segment, rest)) = without_prefix.split_once('/') {
-                payload.url = format!("sneaker://{}/{}", first_segment, rest);
+                p.url = format!("sneaker://{}/{}", first_segment, rest);
             } else {
-                payload.url = format!("sneaker://{}/", without_prefix);
+                p.url = format!("sneaker://{}/", without_prefix);
             }
         }
-    }
+        p
+    };
     let _ = app.emit("webview-navigated", payload);
 }
 
@@ -373,8 +374,8 @@ pub fn run() {
 
             std::thread::spawn(move || {
                 let original_path = req.uri().path().to_string();
-                let mut host_buf = req.uri().host().unwrap_or("home").to_string();
-                let mut path_str = original_path.clone();
+                let host_buf = req.uri().host().unwrap_or("home").to_string();
+                let path_str = original_path.clone();
 
                 let is_asset = path_str.starts_with("/assets/")
                     || path_str.starts_with("/src/")
@@ -385,20 +386,22 @@ pub fn run() {
                     || path_str == "/@react-refresh";
 
                 #[cfg(target_os = "windows")]
-                {
+                let (host_buf, path_str) = {
                     if host_buf == "localhost" {
                         if !is_asset && path_str != "/__progress__" && path_str != "/__progress_api__" {
                             let key = path_str.trim_start_matches('/');
                             if let Some((first_segment, rest)) = key.split_once('/') {
-                                host_buf = first_segment.to_string();
-                                path_str = format!("/{}", rest);
+                                (first_segment.to_string(), format!("/{}", rest))
                             } else {
-                                host_buf = key.to_string();
-                                path_str = "/".to_string();
+                                (key.to_string(), "/".to_string())
                             }
+                        } else {
+                            (host_buf, path_str)
                         }
+                    } else {
+                        (host_buf, path_str)
                     }
-                }
+                };
 
                 let host = &host_buf;
                 let path = &path_str;
@@ -661,18 +664,20 @@ pub fn run() {
                     .on_page_load(move |webview, payload| {
                         if payload.event() == tauri::webview::PageLoadEvent::Finished {
                             if let Ok(url) = webview.url() {
-                                let mut url_str = url.to_string();
+                                let url_str = url.to_string();
                                 #[cfg(target_os = "windows")]
-                                {
+                                let url_str = {
                                     if url_str.starts_with("http://sneaker.localhost/") {
                                         let without_prefix = &url_str["http://sneaker.localhost/".len()..];
                                         if let Some((first_segment, rest)) = without_prefix.split_once('/') {
-                                            url_str = format!("sneaker://{}/{}", first_segment, rest);
+                                            format!("sneaker://{}/{}", first_segment, rest)
                                         } else {
-                                            url_str = format!("sneaker://{}/", without_prefix);
+                                            format!("sneaker://{}/", without_prefix)
                                         }
+                                    } else {
+                                        url_str
                                     }
-                                }
+                                };
                                 let _ = app_handle_clone.emit("webview-navigated", NavPayload {
                                     url: url_str,
                                     action: "load".to_string(),
@@ -686,22 +691,24 @@ pub fn run() {
                             let state = app_handle.state::<ContentWebview>();
                             if let Ok(guard) = state.0.lock() {
                                 if let Some(ref wv) = *guard {
-                                    let mut target_url = url.clone();
+                                    let target_url = url.clone();
                                     #[cfg(target_os = "windows")]
-                                    {
+                                    let target_url = {
                                         if target_url.scheme() == "sneaker" {
                                             let host = target_url.host_str().unwrap_or("home");
-                                            let mut path_and_query = target_url.path().to_string();
-                                            if let Some(q) = target_url.query() {
-                                                path_and_query.push('?');
-                                                path_and_query.push_str(q);
+                                            let path_and_query = match target_url.query() {
+                                                Some(q) => format!("{}?{}", target_url.path(), q),
+                                                None => target_url.path().to_string(),
+                                            };
+                                            if let Ok(u) = url::Url::parse(&format!("http://sneaker.localhost/{}{}", host, path_and_query)) {
+                                                u
+                                            } else {
+                                                target_url
                                             }
-                                            let new_url_str = format!("http://sneaker.localhost/{}{}", host, path_and_query);
-                                            if let Ok(u) = url::Url::parse(&new_url_str) {
-                                                target_url = u;
-                                            }
+                                        } else {
+                                            target_url
                                         }
-                                    }
+                                    };
                                     let _ = wv.navigate(target_url);
                                 }
                             }

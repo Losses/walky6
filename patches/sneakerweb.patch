@@ -139,6 +139,21 @@ index 516aa52..df290d6 100644
          Err(_) => bail!("failed to flush changes to the sneakerweb store"),
      }
  }
+diff --git a/src/lib.rs b/src/lib.rs
+new file mode 100644
+index 0000000..33026f9
+--- /dev/null
++++ b/src/lib.rs
+@@ -0,0 +1,9 @@
++pub mod block;
++pub mod commands;
++pub mod domain;
++pub mod export;
++pub mod import;
++pub mod publish;
++pub mod serve;
++pub mod util;
++pub mod logo;
 diff --git a/src/main.rs b/src/main.rs
 index 8dddd90..f29230f 100644
 --- a/src/main.rs
