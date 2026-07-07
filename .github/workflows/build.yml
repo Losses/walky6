@@ -70,26 +70,5 @@ jobs:
         with:
           projectPath: walky6
           args: ${{ matrix.args }}
-
-      - name: Upload Build Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: walky6-binaries-${{ matrix.platform }}
-          if-no-files-found: error
-          path: |
-            target/release/bundle/**/*.deb
-            target/release/bundle/**/*.AppImage
-            target/release/bundle/**/*.msi
-            target/release/bundle/**/*.exe
-            target/release/bundle/**/*.dmg
-            target/release/bundle/**/*.zip
-            target/universal-apple-darwin/release/bundle/**/*.dmg
-            target/universal-apple-darwin/release/bundle/**/*.zip
-            walky6/src-tauri/target/release/bundle/**/*.deb
-            walky6/src-tauri/target/release/bundle/**/*.AppImage
-            walky6/src-tauri/target/release/bundle/**/*.msi
-            walky6/src-tauri/target/release/bundle/**/*.exe
-            walky6/src-tauri/target/release/bundle/**/*.dmg
-            walky6/src-tauri/target/release/bundle/**/*.zip
-            walky6/src-tauri/target/universal-apple-darwin/release/bundle/**/*.dmg
-            walky6/src-tauri/target/universal-apple-darwin/release/bundle/**/*.zip
+          uploadWorkflowArtifacts: true
+          workflowArtifactNamePattern: walky6-[platform]-[arch]-[bundle]
