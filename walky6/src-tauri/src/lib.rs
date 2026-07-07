@@ -12,7 +12,6 @@ pub struct SneakerwebState {
     pub sneakerweb_port: u16,
     pub secret: String,
     pub dir: PathBuf,
-    pub dist_dir: PathBuf,
 }
 
 pub struct ContentWebview(pub std::sync::Arc<Mutex<Option<tauri::Webview>>>);
@@ -317,7 +316,6 @@ pub fn run() {
         // }
     }
 
-    let dist_dir = PathBuf::from(env!("WALKY6_DIST_DIR"));
     let import_state = ImportState::new();
 
     let sneakerweb_port = get_free_port();
@@ -332,7 +330,6 @@ pub fn run() {
     }
 
     let protocol_import_state = import_state.clone();
-    let protocol_dist_dir = dist_dir.clone();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -340,15 +337,14 @@ pub fn run() {
             sneakerweb_port,
             secret: secret.clone(),
             dir,
-            dist_dir: dist_dir.clone(),
         }))
         .manage(import_state)
         .manage(ContentWebview(std::sync::Arc::new(Mutex::new(None))))
-        .register_asynchronous_uri_scheme_protocol("sneaker", move |_ctx, req, responder| {
+        .register_asynchronous_uri_scheme_protocol("sneaker", move |ctx, req, responder| {
             let import_state = protocol_import_state.clone();
-            let dist_dir = protocol_dist_dir.clone();
             let sw_port = sneakerweb_port;
             let sw_secret = secret.clone();
+            let app_handle = ctx.app_handle().clone();
 
             std::thread::spawn(move || {
                 let path = req.uri().path();
@@ -356,15 +352,14 @@ pub fn run() {
 
                 // 1. Serving __progress__ page
                 if path == "/__progress__" {
-                    let progress_path = dist_dir.join("progress.html");
-                    let response = match std::fs::read(&progress_path) {
-                        Ok(content) => tauri::http::Response::builder()
+                    let response = match app_handle.asset_resolver().get("progress.html".to_string()) {
+                        Some(asset) => tauri::http::Response::builder()
                             .status(200)
                             .header("Content-Type", "text/html")
-                            .body(content)
+                            .body(asset.bytes)
                             .unwrap(),
-                        Err(e) => {
-                            let err_msg = format!("Failed to read progress.html: {e}");
+                        None => {
+                            let err_msg = "Failed to read progress.html: Not found in assets".to_string();
                             tauri::http::Response::builder()
                                 .status(500)
                                 .header("Content-Type", "text/plain")
@@ -378,15 +373,12 @@ pub fn run() {
 
                 // 2. Serving assets
                 if path.starts_with("/assets/") {
-                    let asset_path = dist_dir.join(path.trim_start_matches('/'));
-                    if let Ok(content) = std::fs::read(&asset_path) {
-                        let content_type = mime_guess2::from_path(&asset_path)
-                            .first_or_octet_stream()
-                            .to_string();
+                    let key = path.trim_start_matches('/');
+                    if let Some(asset) = app_handle.asset_resolver().get(key.to_string()) {
                         let response = tauri::http::Response::builder()
                             .status(200)
-                            .header("Content-Type", content_type)
-                            .body(content)
+                            .header("Content-Type", asset.mime_type)
+                            .body(asset.bytes)
                             .unwrap();
                         responder.respond(response);
                     } else {
