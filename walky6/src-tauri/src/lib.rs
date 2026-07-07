@@ -10,6 +10,7 @@ const TOOLBAR_H: u32 = 90;
 
 pub struct SneakerwebState {
     pub sneakerweb_port: u16,
+    pub secret: String,
     pub dir: PathBuf,
     pub dist_dir: PathBuf,
 }
@@ -69,13 +70,13 @@ fn wait_for_port(port: u16, timeout_ms: u64) -> bool {
     false
 }
 
-pub fn start_sneakerweb_server(port: u16, dir: PathBuf) {
+pub fn start_sneakerweb_server(port: u16, secret: String, dir: PathBuf) {
     unsafe {
         std::env::set_var("SNEAKERWEB_DIR", &dir);
         std::env::set_var("PORT", port.to_string());
     }
     std::thread::spawn(move || {
-        if let Err(e) = smol::block_on(sneakerweb::serve::start_server(port)) {
+        if let Err(e) = smol::block_on(sneakerweb::serve::start_server(port, &secret)) {
             eprintln!("sneakerweb server error: {e}");
         }
     });
@@ -84,6 +85,7 @@ pub fn start_sneakerweb_server(port: u16, dir: PathBuf) {
 fn forward_to_upstream(
     host: &str,
     port: u16,
+    secret: &str,
     method: &str,
     path_and_query: &str,
     headers: &tauri::http::HeaderMap,
@@ -100,6 +102,7 @@ fn forward_to_upstream(
             }
         }
     }
+    req_str.push_str(&format!("X-Walky6-Token: {}\r\n", secret));
     req_str.push_str("Connection: close\r\n");
 
     if !body.is_empty() {
@@ -318,9 +321,10 @@ pub fn run() {
     let import_state = ImportState::new();
 
     let sneakerweb_port = get_free_port();
+    let secret: String = (0..32).map(|_| fastrand::alphanumeric()).collect();
     let dir = ensure_sneakerweb_dir();
 
-    start_sneakerweb_server(sneakerweb_port, dir.clone());
+    start_sneakerweb_server(sneakerweb_port, secret.clone(), dir.clone());
 
     eprintln!("Waiting for sneakerweb server on port {sneakerweb_port}...");
     if !wait_for_port(sneakerweb_port, 5000) {
@@ -334,6 +338,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(Mutex::new(SneakerwebState {
             sneakerweb_port,
+            secret: secret.clone(),
             dir,
             dist_dir: dist_dir.clone(),
         }))
@@ -343,6 +348,7 @@ pub fn run() {
             let import_state = protocol_import_state.clone();
             let dist_dir = protocol_dist_dir.clone();
             let sw_port = sneakerweb_port;
+            let sw_secret = secret.clone();
 
             std::thread::spawn(move || {
                 let path = req.uri().path();
@@ -445,6 +451,7 @@ pub fn run() {
                 let (status_code, resp_headers, resp_body) = match forward_to_upstream(
                     &upstream_host,
                     sw_port,
+                    &sw_secret,
                     method,
                     &upstream_path_with_query,
                     headers,

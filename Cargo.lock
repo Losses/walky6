@@ -4919,6 +4919,7 @@ name = "walky6"
 version = "1.0.0"
 dependencies = [
  "anyhow",
+ "fastrand 2.4.1",
  "gtk",
  "mime_guess2",
  "regex-lite",

@@ -141,21 +141,6 @@ index 516aa52..d20ff30 100644
          Err(_) => bail!("failed to flush changes to the sneakerweb store"),
      }
  }
-diff --git a/src/lib.rs b/src/lib.rs
-new file mode 100644
-index 0000000..33026f9
---- /dev/null
-+++ b/src/lib.rs
-@@ -0,0 +1,9 @@
-+pub mod block;
-+pub mod commands;
-+pub mod domain;
-+pub mod export;
-+pub mod import;
-+pub mod publish;
-+pub mod serve;
-+pub mod util;
-+pub mod logo;
 diff --git a/src/main.rs b/src/main.rs
 index 8dddd90..85480b0 100644
 --- a/src/main.rs
@@ -183,7 +168,7 @@ index 8dddd90..85480b0 100644
                          Err(err) => oh_no(&format!("{}", err)).await,
                      }
 diff --git a/src/serve.rs b/src/serve.rs
-index fd4597a..a213814 100644
+index fd4597a..f7ad1cf 100644
 --- a/src/serve.rs
 +++ b/src/serve.rs
 @@ -37,12 +37,12 @@ use crate::util::sneakerweb_dir;
@@ -193,7 +178,7 @@ index fd4597a..a213814 100644
 -pub async fn start_server() -> Result<()> {
 -    // Okay so I started with the tutorial at the end of the Rust book, okay? Got a problem?
 -    let listener = TcpListener::bind("0.0.0.0:1312").await.context("failed to bind port 1312 to serve the sneakerweb. Is it in use, or do you need to set permissions?")?;
-+pub async fn start_server(port: u16) -> Result<()> {
++pub async fn start_server(port: u16, secret: &str) -> Result<()> {
 +    let addr = format!("127.0.0.1:{port}");
 +    let listener = TcpListener::bind(&addr).await.context(format!("failed to bind {addr} to serve the sneakerweb. Is it in use, or do you need to set permissions?"))?;
      yay(&format!(
@@ -208,7 +193,7 @@ index fd4597a..a213814 100644
      while let Some(stream) = incoming.next().await {
          let mut stream = stream?;
 -        match handle_connection(stream.clone()).await {
-+        match handle_connection(stream.clone(), port).await {
++        match handle_connection(stream.clone(), port, secret).await {
              Err(err) => {
 -                // TODO: There are kinds of problem which we might have which are not well described
 -                // by 404 errors. I am going to stick my fingers in my ears and ignore them until things
@@ -221,11 +206,11 @@ index fd4597a..a213814 100644
  const FRONT_CSS: &str = include_str!("frontpage.css");
  
 -async fn handle_connection(stream: TcpStream) -> Result<()> {
-+async fn handle_connection(stream: TcpStream, port: u16) -> Result<()> {
++async fn handle_connection(stream: TcpStream, port: u16, secret: &str) -> Result<()> {
      let mut buf_reader = BufReader::new(stream.clone());
      let mut headers = [httparse::EMPTY_HEADER; 64];
      let mut req = httparse::Request::new(&mut headers);
-@@ -89,18 +86,13 @@ async fn handle_connection(stream: TcpStream) -> Result<()> {
+@@ -89,19 +86,29 @@ async fn handle_connection(stream: TcpStream) -> Result<()> {
  
      req.parse(buf_reader.buffer())?;
  
@@ -235,18 +220,34 @@ index fd4597a..a213814 100644
 -    // sneakerweb.localhost
 -    // or <b16subspaceid>.localhost
 -    // We should error on anything else!
--
++    let mut authorized = false;
++    for header in &*req.headers {
++        if header.name == "X-Walky6-Token" {
++            if let Ok(token) = std::str::from_utf8(header.value) {
++                if token == secret {
++                    authorized = true;
++                }
++            }
++        }
++    }
++
++    if !authorized {
++        return Ok(());
++    }
+ 
      let mut domain = Domain::Homepage(FrontPageOrder::Domain);
      let mut parsed_hostname = false;
  
      let mut hostname = "sneakerweb".to_string();
  
+-    for header in req.headers {
 +    let expected_tld = format!("localhost:{port}");
 +
-     for header in req.headers {
++    for header in &*req.headers {
          if header.name == "Host" {
              let hostname_str = std::str::from_utf8(header.value).unwrap();
-@@ -119,19 +111,11 @@ async fn handle_connection(stream: TcpStream) -> Result<()> {
+ 
+@@ -119,19 +126,11 @@ async fn handle_connection(stream: TcpStream) -> Result<()> {
                  hostname = host_fst.to_string();
              } else if host_fst != "sneakerweb" {
                  bail!("hostname {} wasn't a Subspace ID or the homepage", host_fst)
@@ -268,7 +269,7 @@ index fd4597a..a213814 100644
              };
  
              if let Some(_whatever) = host_iterator.next() {
-@@ -140,17 +124,26 @@ async fn handle_connection(stream: TcpStream) -> Result<()> {
+@@ -140,17 +139,26 @@ async fn handle_connection(stream: TcpStream) -> Result<()> {
  
              parsed_hostname = true;
          }
@@ -298,7 +299,7 @@ index fd4597a..a213814 100644
      if let Some(path) = req.path {
          url_to_parse.push_str(path);
      }
-@@ -169,7 +162,7 @@ async fn handle_connection(stream: TcpStream) -> Result<()> {
+@@ -169,7 +177,7 @@ async fn handle_connection(stream: TcpStream) -> Result<()> {
                  .await
                  .context("could not open sneakerweb storage")?;
  
@@ -307,7 +308,7 @@ index fd4597a..a213814 100644
  
              let mut http_consumer =
                  writer_to_bulk_consumer(stream.clone(), new_unbounded_elastic());
-@@ -304,6 +297,7 @@ async fn handle_connection(stream: TcpStream) -> Result<()> {
+@@ -304,6 +312,7 @@ async fn handle_connection(stream: TcpStream) -> Result<()> {
  
  struct DomainListing {
      id: String,
@@ -315,7 +316,7 @@ index fd4597a..a213814 100644
      last_updated: Timestamp,
      has_index: bool,
      has_preview: bool,
-@@ -336,7 +330,7 @@ impl DomainListing {
+@@ -336,7 +345,7 @@ impl DomainListing {
      }
  
      fn root_url(&self) -> String {
@@ -324,7 +325,7 @@ index fd4597a..a213814 100644
      }
  
      fn preview_url(&self) -> Option<String> {
-@@ -407,6 +401,7 @@ async fn render_frontpage(
+@@ -407,6 +416,7 @@ async fn render_frontpage(
      store: &mut PersistentStore,
      order: FrontPageOrder,
      buffer: &mut Buffer,
@@ -332,7 +333,7 @@ index fd4597a..a213814 100644
  ) -> Result<()> {
      let namespace = NamespaceId::from_bytes(&SNEAKERWEB_NAMESPACE_ID_BYTES);
  
-@@ -480,6 +475,7 @@ async fn render_frontpage(
+@@ -480,6 +490,7 @@ async fn render_frontpage(
          if entry_count >= 2 {
              let listing = DomainListing {
                  id: b16_id,
