@@ -1,8 +1,7 @@
-diff --git a/src/import.rs b/src/import.rs
-index 516aa52..df290d6 100644
---- a/src/import.rs
-+++ b/src/import.rs
-@@ -4,7 +4,7 @@ use smol::{
+diff -ruN '--exclude=.git' '--exclude=Cargo.lock' '--exclude=.gitignore' /tmp/snk-vendor/src/import.rs vendor/sneakerweb/src/import.rs
+--- /tmp/snk-vendor/src/import.rs	2026-07-07 17:00:48.170981550 -0400
++++ vendor/sneakerweb/src/import.rs	2026-07-07 14:23:01.469156823 -0400
+@@ -4,7 +4,7 @@
      fs::File,
      io::{AsyncBufReadExt, BufReader},
  };
@@ -11,7 +10,7 @@ index 516aa52..df290d6 100644
  use ufotofu::{
      ExpectedFinalError, ProduceAtLeastError,
      codec::{Blame, DecodeError},
-@@ -25,23 +25,46 @@ use crate::util::{SNEAKERWEB_NAMESPACE_ID_BYTES, domain_style, get_domain, hmm,
+@@ -25,23 +25,46 @@
  
  #[derive(Args)]
  pub struct ImportArgs {
@@ -63,7 +62,7 @@ index 516aa52..df290d6 100644
      let drop_producer = reader_to_bulk_producer(file, new_unbounded_elastic());
      let sneakerweb_fs_path = sneakerweb_dir().await?;
      let namespace_id = NamespaceId::from_bytes(&SNEAKERWEB_NAMESPACE_ID_BYTES);
-@@ -86,6 +109,9 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
+@@ -86,6 +109,9 @@
  
      let mut skipped = BTreeSet::new();
  
@@ -73,7 +72,7 @@ index 516aa52..df290d6 100644
      let mut filtering_decoder =
          ClosureProducer::<_, (DropSliceMetadata, SliceStreamProducer<_>), (), Error>::new(
              async || {
-@@ -96,14 +122,21 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
+@@ -96,14 +122,21 @@
                          return Ok(Right(()));
                      };
  
@@ -96,7 +95,7 @@ index 516aa52..df290d6 100644
                                      return Ok(Left((metadata, slice_stream)));
                                  }
                                  skip_reason = "unfamiliar";
-@@ -121,9 +154,10 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
+@@ -121,9 +154,10 @@
  
                      skipped.insert(domain_id.clone());
  
@@ -108,7 +107,7 @@ index 516aa52..df290d6 100644
                                  "an entry in the .snk file was too large for this device",
                              )?,
                          )
-@@ -132,6 +166,8 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
+@@ -132,6 +166,8 @@
                              Ok(()) => anyhow!("unexpected end of .snk file"),
                              Err(err) => map_decode_err(err),
                          })?;
@@ -117,7 +116,7 @@ index 516aa52..df290d6 100644
                      slice_stream
                          .produce_final()
                          .await
-@@ -145,6 +181,8 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
+@@ -145,6 +181,8 @@
              },
          );
  
@@ -126,7 +125,7 @@ index 516aa52..df290d6 100644
      import_drop(&mut store, &mut filtering_decoder, true)
          .await
          .map_err(|err| match err {
-@@ -169,7 +207,11 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
+@@ -169,7 +207,11 @@
          })?;
  
      match store.flush().await {
@@ -139,12 +138,10 @@ index 516aa52..df290d6 100644
          Err(_) => bail!("failed to flush changes to the sneakerweb store"),
      }
  }
-diff --git a/src/lib.rs b/src/lib.rs
-new file mode 100644
-index 0000000..33026f9
---- /dev/null
-+++ b/src/lib.rs
-@@ -0,0 +1,9 @@
+diff -ruN '--exclude=.git' '--exclude=Cargo.lock' '--exclude=.gitignore' /tmp/snk-vendor/src/lib.rs vendor/sneakerweb/src/lib.rs
+--- /tmp/snk-vendor/src/lib.rs	1969-12-31 19:00:00.000000000 -0500
++++ vendor/sneakerweb/src/lib.rs	2026-07-07 17:26:10.405877330 -0400
+@@ -0,0 +1,11 @@
 +pub mod block;
 +pub mod commands;
 +pub mod domain;
@@ -154,11 +151,12 @@ index 0000000..33026f9
 +pub mod serve;
 +pub mod util;
 +pub mod logo;
-diff --git a/src/main.rs b/src/main.rs
-index 8dddd90..f29230f 100644
---- a/src/main.rs
-+++ b/src/main.rs
-@@ -46,8 +46,9 @@ fn main() {
++
++pub use willow25::storage::PersistentStore;
+diff -ruN '--exclude=.git' '--exclude=Cargo.lock' '--exclude=.gitignore' /tmp/snk-vendor/src/main.rs vendor/sneakerweb/src/main.rs
+--- /tmp/snk-vendor/src/main.rs	2026-07-07 17:00:48.170981550 -0400
++++ vendor/sneakerweb/src/main.rs	2026-07-07 14:23:01.469192319 -0400
+@@ -46,8 +46,9 @@
              }
              Commands::Import(import_args) => {
                  // Import the contents of a drop into the persistent store.
@@ -169,7 +167,7 @@ index 8dddd90..f29230f 100644
                          Ok(_) => {
                              yay(&format!(
                                  "successfully imported from {}",
-@@ -71,8 +72,9 @@ fn main() {
+@@ -71,8 +72,9 @@
                  })
              }
              &Commands::Serve => {
@@ -180,11 +178,10 @@ index 8dddd90..f29230f 100644
                          Ok(()) => (), // I don't think we have anything interesting to say when the server shuts down?
                          Err(err) => oh_no(&format!("{}", err)).await,
                      }
-diff --git a/src/serve.rs b/src/serve.rs
-index fd4597a..9603cbf 100644
---- a/src/serve.rs
-+++ b/src/serve.rs
-@@ -37,12 +37,12 @@ use crate::util::sneakerweb_dir;
+diff -ruN '--exclude=.git' '--exclude=Cargo.lock' '--exclude=.gitignore' /tmp/snk-vendor/src/serve.rs vendor/sneakerweb/src/serve.rs
+--- /tmp/snk-vendor/src/serve.rs	2026-07-07 17:00:48.170981550 -0400
++++ vendor/sneakerweb/src/serve.rs	2026-07-07 17:26:22.819707682 -0400
+@@ -37,12 +37,12 @@
  use crate::util::yay;
  use crate::util::{SNEAKERWEB_NAMESPACE_ID_BYTES, get_domain};
  
@@ -201,7 +198,7 @@ index fd4597a..9603cbf 100644
      ))
      .await;
  
-@@ -50,11 +50,8 @@ pub async fn start_server() -> Result<()> {
+@@ -50,11 +50,8 @@
  
      while let Some(stream) = incoming.next().await {
          let mut stream = stream?;
@@ -214,7 +211,16 @@ index fd4597a..9603cbf 100644
                  stream
                      .write_all(format!("HTTP/1.1 404 NOT FOUND\r\n\r\n{err}\r\n").as_bytes())
                      .await?;
-@@ -80,7 +77,7 @@ enum Domain {
+@@ -66,7 +63,7 @@
+     Ok(())
+ }
+ 
+-enum FrontPageOrder {
++pub enum FrontPageOrder {
+     Domain,
+     Newest,
+     Oldest,
+@@ -80,7 +77,7 @@
  
  const FRONT_CSS: &str = include_str!("frontpage.css");
  
@@ -223,7 +229,7 @@ index fd4597a..9603cbf 100644
      let mut buf_reader = BufReader::new(stream.clone());
      let mut headers = [httparse::EMPTY_HEADER; 64];
      let mut req = httparse::Request::new(&mut headers);
-@@ -89,19 +86,29 @@ async fn handle_connection(stream: TcpStream) -> Result<()> {
+@@ -89,19 +86,29 @@
  
      req.parse(buf_reader.buffer())?;
  
@@ -260,7 +266,7 @@ index fd4597a..9603cbf 100644
          if header.name == "Host" {
              let hostname_str = std::str::from_utf8(header.value).unwrap();
  
-@@ -119,19 +126,11 @@ async fn handle_connection(stream: TcpStream) -> Result<()> {
+@@ -119,19 +126,11 @@
                  hostname = host_fst.to_string();
              } else if host_fst != "sneakerweb" {
                  bail!("hostname {} wasn't a Subspace ID or the homepage", host_fst)
@@ -282,7 +288,7 @@ index fd4597a..9603cbf 100644
              };
  
              if let Some(_whatever) = host_iterator.next() {
-@@ -140,17 +139,26 @@ async fn handle_connection(stream: TcpStream) -> Result<()> {
+@@ -140,17 +139,26 @@
  
              parsed_hostname = true;
          }
@@ -312,33 +318,49 @@ index fd4597a..9603cbf 100644
      if let Some(path) = req.path {
          url_to_parse.push_str(path);
      }
-@@ -169,7 +177,7 @@ async fn handle_connection(stream: TcpStream) -> Result<()> {
-                 .await
-                 .context("could not open sneakerweb storage")?;
+@@ -302,11 +310,11 @@
+     }
+ }
  
--            render_frontpage(&mut store, order, &mut buffer).await?;
-+            render_frontpage(&mut store, order, &mut buffer, port).await?;
+-struct DomainListing {
+-    id: String,
+-    last_updated: Timestamp,
+-    has_index: bool,
+-    has_preview: bool,
++pub struct DomainListing {
++    pub id: String,
++    pub last_updated: Timestamp,
++    pub has_index: bool,
++    pub has_preview: bool,
+ }
  
-             let mut http_consumer =
-                 writer_to_bulk_consumer(stream.clone(), new_unbounded_elastic());
-@@ -304,6 +312,7 @@ async fn handle_connection(stream: TcpStream) -> Result<()> {
- 
- struct DomainListing {
-     id: String,
-+    port: u16,
-     last_updated: Timestamp,
-     has_index: bool,
-     has_preview: bool,
-@@ -336,7 +345,7 @@ impl DomainListing {
+ impl DomainListing {
+@@ -335,19 +343,19 @@
+         }
      }
  
-     fn root_url(&self) -> String {
+-    fn root_url(&self) -> String {
 -        format!("http://{}.localhost:1312", self.id)
-+        format!("http://{}.localhost:{}", self.id, self.port)
++    pub fn root_url(&self) -> String {
++        format!("http://{}.localhost/", self.id)
      }
  
-     fn preview_url(&self) -> Option<String> {
-@@ -379,7 +388,7 @@ impl Renderable for DomainListing {
+-    fn preview_url(&self) -> Option<String> {
++    pub fn preview_url(&self) -> Option<String> {
+         if self.has_preview {
+-            Some(format!("{}/sneakerweb.html", self.root_url()))
++            Some(format!("{}sneakerweb.html", self.root_url()))
+         } else {
+             None
+         }
+     }
+ 
+-    fn format_last_updated(&self) -> String {
++    pub fn format_last_updated(&self) -> String {
+         let fmt = Formatter::new(
+             self.last_updated.into(),
+             Format::from_str("%Y-%m-%d").unwrap(),
+@@ -379,7 +387,7 @@
              Some(url) => {
                  rsx! {
                      <li>
@@ -347,27 +369,113 @@ index fd4597a..9603cbf 100644
                          (SiteMetadata { listing: self })
                      </li>
                  }
-@@ -407,6 +416,7 @@ async fn render_frontpage(
+@@ -403,7 +411,7 @@
+     }
+ }
+ 
+-async fn render_frontpage(
++pub async fn render_frontpage(
      store: &mut PersistentStore,
      order: FrontPageOrder,
      buffer: &mut Buffer,
-+    port: u16,
- ) -> Result<()> {
-     let namespace = NamespaceId::from_bytes(&SNEAKERWEB_NAMESPACE_ID_BYTES);
+@@ -528,3 +536,93 @@
  
-@@ -480,6 +490,7 @@ async fn render_frontpage(
-         if entry_count >= 2 {
-             let listing = DomainListing {
-                 id: b16_id,
-+                port,
-                 last_updated,
-                 has_index: index_entry.is_some(),
-                 has_preview: sneakerweb_entry.is_some(),
-diff --git a/src/util.rs b/src/util.rs
-index 4406952..02fa524 100644
---- a/src/util.rs
-+++ b/src/util.rs
-@@ -31,6 +31,12 @@ where
+     Ok(())
+ }
++
++pub async fn render_frontpage_with_store(
++    store: &mut PersistentStore,
++    order: &str,
++) -> Result<String> {
++    let order_enum = match order {
++        "/oldest" => FrontPageOrder::Oldest,
++        "/newest" => FrontPageOrder::Newest,
++        "/sneakiest" => FrontPageOrder::Sneakiest,
++        _ => FrontPageOrder::Domain,
++    };
++    let mut buffer = Buffer::new();
++    render_frontpage(store, order_enum, &mut buffer).await?;
++    Ok(buffer.rendered().as_inner().to_string())
++}
++
++pub async fn get_entry_with_store(
++    store: &mut PersistentStore,
++    subspace_hex: &str,
++    entry_path: &str,
++) -> Result<Option<(String, Vec<u8>, String)>> {
++    let decoded = base16::decode(subspace_hex)
++        .map_err(|_| anyhow::anyhow!("invalid subspace hex"))?;
++    if decoded.len() != 32 {
++        anyhow::bail!("invalid subspace id length");
++    }
++    let subspace_id = SubspaceId::from_bytes(
++        decoded.as_array().expect("checked length above"),
++    );
++
++    let trimmed = entry_path.trim_start_matches('/');
++    let segments: Vec<&str> = trimmed.split('/').collect();
++    let segment_bytes: Vec<&[u8]> = segments
++        .into_iter()
++        .map(|s| if s.is_empty() { "index.html".as_bytes() } else { s.as_bytes() })
++        .collect();
++    let path = if segment_bytes.is_empty() {
++        Path::new()
++    } else {
++        Path::from_slices(&segment_bytes)?
++    };
++
++    let namespace = NamespaceId::from_bytes(&SNEAKERWEB_NAMESPACE_ID_BYTES);
++    let key = (subspace_id, path);
++
++    let entry = match store.get_entry(&namespace, &key, None).await? {
++        Some(e) => e,
++        None => return Ok(None),
++    };
++
++    let mime = mime_guess2::from_path(entry_path).first_or_octet_stream().to_string();
++    let etag = base16::encode_lower(entry.payload_digest().as_bytes());
++
++    let buf = Vec::new();
++    let cursor = std::io::Cursor::new(buf);
++    let writer = smol::Unblock::new(cursor);
++    let mut consumer = writer_to_bulk_consumer(writer, new_unbounded_elastic());
++    store
++        .get_payload_slice(&namespace, &key, None, 0, u64::MAX, &mut consumer)
++        .await?;
++
++    consumer.flush().await?;
++    let (mut writer, _queue) = consumer.into_inner();
++    writer.flush().await?;
++    let cursor = writer.into_inner().await;
++    let bytes = cursor.into_inner();
++
++    Ok(Some((mime, bytes, etag)))
++}
++
++pub async fn generate_frontpage_html(
++    store_dir: &std::path::Path,
++    order: &str,
++) -> Result<String> {
++    let mut store = PersistentStore::new(store_dir)
++        .await
++        .context("could not open sneakerweb storage")?;
++    render_frontpage_with_store(&mut store, order).await
++}
++
++pub async fn get_entry_content(
++    store_dir: &std::path::Path,
++    subspace_hex: &str,
++    entry_path: &str,
++) -> Result<Option<(String, Vec<u8>, String)>> {
++    let mut store = PersistentStore::new(store_dir)
++        .await
++        .context("could not open sneakerweb storage")?;
++    get_entry_with_store(&mut store, subspace_hex, entry_path).await
++}
+diff -ruN '--exclude=.git' '--exclude=Cargo.lock' '--exclude=.gitignore' /tmp/snk-vendor/src/util.rs vendor/sneakerweb/src/util.rs
+--- /tmp/snk-vendor/src/util.rs	2026-07-07 17:00:48.170981550 -0400
++++ vendor/sneakerweb/src/util.rs	2026-07-07 14:23:01.469219600 -0400
+@@ -31,6 +31,12 @@
  
  /// Retrieves the path within the user's home directory where sneakerweb configuration and data are located.
  pub async fn sneakerweb_dir() -> Result<PathBuf, Error> {
@@ -380,7 +488,7 @@ index 4406952..02fa524 100644
      let mut store_path = home_dir().ok_or(Error::new(
          ErrorKind::NotFound,
          "could not determine user home directory",
-@@ -41,6 +47,13 @@ pub async fn sneakerweb_dir() -> Result<PathBuf, Error> {
+@@ -41,6 +47,13 @@
      Ok(store_path)
  }
  
