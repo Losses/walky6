@@ -235,13 +235,27 @@ async fn navigate_content(
     content_wv: tauri::State<'_, ContentWebview>,
     path: String,
 ) -> Result<(), String> {
-    let parsed = if path.starts_with("sneaker://") {
+    let mut parsed = if path.starts_with("sneaker://") {
         url::Url::parse(&path).map_err(|e| format!("invalid URL: {e}"))?
     } else {
         let base = "sneaker://home";
         let clean_path = if path.starts_with('/') { path } else { format!("/{path}") };
         url::Url::parse(&format!("{base}{clean_path}")).map_err(|e| format!("invalid URL: {e}"))?
     };
+
+    #[cfg(target_os = "windows")]
+    {
+        if parsed.scheme() == "sneaker" {
+            let host = parsed.host_str().unwrap_or("home");
+            let mut path_and_query = parsed.path().to_string();
+            if let Some(q) = parsed.query() {
+                path_and_query.push('?');
+                path_and_query.push_str(q);
+            }
+            let new_url_str = format!("http://sneaker.localhost/{}{}", host, path_and_query);
+            parsed = url::Url::parse(&new_url_str).map_err(|e| e.to_string())?;
+        }
+    }
 
     let wv = content_wv.0.lock().map_err(|e| e.to_string())?;
     if let Some(ref wv) = *wv {
@@ -275,7 +289,18 @@ struct NavPayload {
 }
 
 #[tauri::command]
-fn on_url_changed(app: AppHandle, payload: NavPayload) {
+fn on_url_changed(app: AppHandle, mut payload: NavPayload) {
+    #[cfg(target_os = "windows")]
+    {
+        if payload.url.starts_with("http://sneaker.localhost/") {
+            let without_prefix = &payload.url["http://sneaker.localhost/".len()..];
+            if let Some((first_segment, rest)) = without_prefix.split_once('/') {
+                payload.url = format!("sneaker://{}/{}", first_segment, rest);
+            } else {
+                payload.url = format!("sneaker://{}/", without_prefix);
+            }
+        }
+    }
     let _ = app.emit("webview-navigated", payload);
 }
 
@@ -347,7 +372,25 @@ pub fn run() {
             let app_handle = ctx.app_handle().clone();
 
             std::thread::spawn(move || {
-                let path = req.uri().path();
+                let mut host_buf = req.uri().host().unwrap_or("home").to_string();
+                let mut path_str = req.uri().path().to_string();
+
+                #[cfg(target_os = "windows")]
+                {
+                    if host_buf == "localhost" {
+                        let clean_path = path_str.trim_start_matches('/');
+                        if let Some((first_segment, rest)) = clean_path.split_once('/') {
+                            host_buf = first_segment.to_string();
+                            path_str = format!("/{}", rest);
+                        } else {
+                            host_buf = clean_path.to_string();
+                            path_str = "/".to_string();
+                        }
+                    }
+                }
+
+                let host = &host_buf;
+                let path = &path_str;
                 let query = req.uri().query();
 
                 // 1. Serving __progress__ page
@@ -421,7 +464,6 @@ pub fn run() {
                 }
 
                 // 4. Serving proxy / upstream server requests
-                let host = req.uri().host().unwrap_or("home");
                 let (upstream_host, upstream_path) = if host == "home" || host == "localhost" || host.is_empty() {
                     (format!("sneakerweb.localhost:{sw_port}"), path.to_string())
                 } else if host.len() == 64 {
@@ -497,9 +539,15 @@ pub fn run() {
                         let subdomain = caps.get(1).map_or("", |m| m.as_str());
                         let path = caps.get(2).map_or("", |m| m.as_str());
                         if subdomain == "sneakerweb" {
-                            format!("sneaker://home{path}")
+                            #[cfg(target_os = "windows")]
+                            { format!("http://sneaker.localhost/home{path}") }
+                            #[cfg(not(target_os = "windows"))]
+                            { format!("sneaker://home{path}") }
                         } else {
-                            format!("sneaker://{subdomain}{path}")
+                            #[cfg(target_os = "windows")]
+                            { format!("http://sneaker.localhost/{subdomain}{path}") }
+                            #[cfg(not(target_os = "windows"))]
+                            { format!("sneaker://{subdomain}{path}") }
                         }
                     });
                     rewritten.into_owned().into_bytes()
@@ -558,7 +606,7 @@ pub fn run() {
 
             let app_handle_clone = app.app_handle().clone();
             let builder =
-                tauri::webview::WebviewBuilder::new("content", tauri::WebviewUrl::External(home_url.clone()))
+                tauri::webview::WebviewBuilder::new("content", tauri::WebviewUrl::CustomProtocol(home_url.clone()))
                     .initialization_script(r#"
                         (function() {
                             if (window !== window.top) return;
@@ -604,7 +652,18 @@ pub fn run() {
                     .on_page_load(move |webview, payload| {
                         if payload.event() == tauri::webview::PageLoadEvent::Finished {
                             if let Ok(url) = webview.url() {
-                                let url_str = url.to_string();
+                                let mut url_str = url.to_string();
+                                #[cfg(target_os = "windows")]
+                                {
+                                    if url_str.starts_with("http://sneaker.localhost/") {
+                                        let without_prefix = &url_str["http://sneaker.localhost/".len()..];
+                                        if let Some((first_segment, rest)) = without_prefix.split_once('/') {
+                                            url_str = format!("sneaker://{}/{}", first_segment, rest);
+                                        } else {
+                                            url_str = format!("sneaker://{}/", without_prefix);
+                                        }
+                                    }
+                                }
                                 let _ = app_handle_clone.emit("webview-navigated", NavPayload {
                                     url: url_str,
                                     action: "load".to_string(),
@@ -618,7 +677,23 @@ pub fn run() {
                             let state = app_handle.state::<ContentWebview>();
                             if let Ok(guard) = state.0.lock() {
                                 if let Some(ref wv) = *guard {
-                                    let _ = wv.navigate(url);
+                                    let mut target_url = url.clone();
+                                    #[cfg(target_os = "windows")]
+                                    {
+                                        if target_url.scheme() == "sneaker" {
+                                            let host = target_url.host_str().unwrap_or("home");
+                                            let mut path_and_query = target_url.path().to_string();
+                                            if let Some(q) = target_url.query() {
+                                                path_and_query.push('?');
+                                                path_and_query.push_str(q);
+                                            }
+                                            let new_url_str = format!("http://sneaker.localhost/{}{}", host, path_and_query);
+                                            if let Ok(u) = url::Url::parse(&new_url_str) {
+                                                target_url = u;
+                                            }
+                                        }
+                                    }
+                                    let _ = wv.navigate(target_url);
                                 }
                             }
                             tauri::webview::NewWindowResponse::Deny
