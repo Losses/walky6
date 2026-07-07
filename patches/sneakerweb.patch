@@ -157,7 +157,7 @@ index 0000000..33026f9
 +pub mod util;
 +pub mod logo;
 diff --git a/src/main.rs b/src/main.rs
-index 8dddd90..85480b0 100644
+index 8dddd90..f29230f 100644
 --- a/src/main.rs
 +++ b/src/main.rs
 @@ -46,8 +46,9 @@ fn main() {
@@ -178,12 +178,12 @@ index 8dddd90..85480b0 100644
 +                let port = util::sneakerweb_port();
                  smol::block_on(async {
 -                    match serve::start_server().await {
-+                    match serve::start_server(port).await {
++                    match serve::start_server(port, "").await {
                          Ok(()) => (), // I don't think we have anything interesting to say when the server shuts down?
                          Err(err) => oh_no(&format!("{}", err)).await,
                      }
 diff --git a/src/serve.rs b/src/serve.rs
-index fd4597a..f7ad1cf 100644
+index fd4597a..442a794 100644
 --- a/src/serve.rs
 +++ b/src/serve.rs
 @@ -37,12 +37,12 @@ use crate::util::sneakerweb_dir;
@@ -235,7 +235,7 @@ index fd4597a..f7ad1cf 100644
 -    // sneakerweb.localhost
 -    // or <b16subspaceid>.localhost
 -    // We should error on anything else!
-+    let mut authorized = false;
++    let mut authorized = secret.is_empty();
 +    for header in &*req.headers {
 +        if header.name == "X-Walky6-Token" {
 +            if let Ok(token) = std::str::from_utf8(header.value) {
