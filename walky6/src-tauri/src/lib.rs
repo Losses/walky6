@@ -372,19 +372,30 @@ pub fn run() {
             let app_handle = ctx.app_handle().clone();
 
             std::thread::spawn(move || {
+                let original_path = req.uri().path().to_string();
                 let mut host_buf = req.uri().host().unwrap_or("home").to_string();
-                let mut path_str = req.uri().path().to_string();
+                let mut path_str = original_path.clone();
+
+                let is_asset = path_str.starts_with("/assets/")
+                    || path_str.starts_with("/src/")
+                    || path_str.starts_with("/node_modules/")
+                    || path_str.starts_with("/@vite/")
+                    || path_str.starts_with("/@id/")
+                    || path_str.starts_with("/@fs/")
+                    || path_str == "/@react-refresh";
 
                 #[cfg(target_os = "windows")]
                 {
                     if host_buf == "localhost" {
-                        let clean_path = path_str.trim_start_matches('/');
-                        if let Some((first_segment, rest)) = clean_path.split_once('/') {
-                            host_buf = first_segment.to_string();
-                            path_str = format!("/{}", rest);
-                        } else {
-                            host_buf = clean_path.to_string();
-                            path_str = "/".to_string();
+                        if !is_asset && path_str != "/__progress__" && path_str != "/__progress_api__" {
+                            let key = path_str.trim_start_matches('/');
+                            if let Some((first_segment, rest)) = key.split_once('/') {
+                                host_buf = first_segment.to_string();
+                                path_str = format!("/{}", rest);
+                            } else {
+                                host_buf = key.to_string();
+                                path_str = "/".to_string();
+                            }
                         }
                     }
                 }
@@ -415,22 +426,20 @@ pub fn run() {
                 }
 
                 // 2. Serving assets
-                if path.starts_with("/assets/") {
-                    let key = path.trim_start_matches('/');
-                    if let Some(asset) = app_handle.asset_resolver().get(key.to_string()) {
-                        let response = tauri::http::Response::builder()
+                if is_asset {
+                    let key = original_path.trim_start_matches('/');
+                    let response = match app_handle.asset_resolver().get(key.to_string()) {
+                        Some(asset) => tauri::http::Response::builder()
                             .status(200)
                             .header("Content-Type", asset.mime_type)
                             .body(asset.bytes)
-                            .unwrap();
-                        responder.respond(response);
-                    } else {
-                        let response = tauri::http::Response::builder()
+                            .unwrap(),
+                        None => tauri::http::Response::builder()
                             .status(404)
                             .body(vec![])
-                            .unwrap();
-                        responder.respond(response);
-                    }
+                            .unwrap(),
+                    };
+                    responder.respond(response);
                     return;
                 }
 
