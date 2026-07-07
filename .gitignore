@@ -44,4 +44,4 @@ vendor
 
 # Tauri
 walky6/src-tauri/gen
-result/*
+result
