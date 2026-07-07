@@ -1,0 +1,6 @@
+# Handle line endings automatically for files detected as text
+* text=auto
+
+# Force LF line endings for patches and shell scripts to ensure compatibility
+*.patch text eol=lf
+*.sh text eol=lf
