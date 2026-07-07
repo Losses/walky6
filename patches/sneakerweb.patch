@@ -139,21 +139,6 @@ index 516aa52..df290d6 100644
          Err(_) => bail!("failed to flush changes to the sneakerweb store"),
      }
  }
-diff --git a/src/lib.rs b/src/lib.rs
-new file mode 100644
-index 0000000..33026f9
---- /dev/null
-+++ b/src/lib.rs
-@@ -0,0 +1,9 @@
-+pub mod block;
-+pub mod commands;
-+pub mod domain;
-+pub mod export;
-+pub mod import;
-+pub mod publish;
-+pub mod serve;
-+pub mod util;
-+pub mod logo;
 diff --git a/src/main.rs b/src/main.rs
 index 8dddd90..f29230f 100644
 --- a/src/main.rs
@@ -181,7 +166,7 @@ index 8dddd90..f29230f 100644
                          Err(err) => oh_no(&format!("{}", err)).await,
                      }
 diff --git a/src/serve.rs b/src/serve.rs
-index fd4597a..442a794 100644
+index fd4597a..9603cbf 100644
 --- a/src/serve.rs
 +++ b/src/serve.rs
 @@ -37,12 +37,12 @@ use crate::util::sneakerweb_dir;
@@ -338,6 +323,15 @@ index fd4597a..442a794 100644
      }
  
      fn preview_url(&self) -> Option<String> {
+@@ -379,7 +388,7 @@ impl Renderable for DomainListing {
+             Some(url) => {
+                 rsx! {
+                     <li>
+-                        <iframe class="preview" loading="lazy" sandbox="allow-popups allow-popups-to-escape-sandbox" src={url}></iframe>
++                        <iframe class="preview" loading="lazy" sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox" src={url}></iframe>
+                         (SiteMetadata { listing: self })
+                     </li>
+                 }
 @@ -407,6 +416,7 @@ async fn render_frontpage(
      store: &mut PersistentStore,
      order: FrontPageOrder,
