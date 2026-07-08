@@ -365,7 +365,7 @@ mod webview2_handler {
     use super::*;
     use webview2_com::Microsoft::Web::WebView2::Win32::*;
     use webview2_com::WebResourceRequestedEventHandler;
-    use windows::core::{HSTRING, PCWSTR};
+    use windows::core::{HSTRING, PCWSTR, Interface};
     use windows::Win32::UI::Shell::SHCreateMemStream;
     use std::fmt::Write;
 
@@ -383,11 +383,26 @@ mod webview2_handler {
             let env = wv.environment();
 
             let filter = HSTRING::from("http://*.localhost/*");
+            
             unsafe {
-                core_webview.AddWebResourceRequestedFilter(
-                    &filter,
-                    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
-                ).expect("failed to add filter");
+                let result = core_webview.cast::<ICoreWebView2_22>();
+                match result {
+                    Ok(core_webview_22) => {
+                        eprintln!("[webview2-handler] using ICoreWebView2_22 for cross-origin iframe support");
+                        core_webview_22.AddWebResourceRequestedFilterWithRequestSourceKinds(
+                            &filter,
+                            COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+                            COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL,
+                        ).expect("failed to add filter with request source kinds");
+                    }
+                    Err(_) => {
+                        eprintln!("[webview2-handler] ICoreWebView2_22 not available, falling back to legacy API (cross-origin iframes may not work)");
+                        core_webview.AddWebResourceRequestedFilter(
+                            &filter,
+                            COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+                        ).expect("failed to add filter");
+                    }
+                }
             }
 
             let store_tx_clone = store_tx.clone();
