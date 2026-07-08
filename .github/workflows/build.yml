@@ -47,6 +47,14 @@ jobs:
           git checkout 888cf132207a2bf0622a5633a2d347e9e910538c
           git apply ../../patches/sneakerweb.patch
 
+      - name: Setup bab_rs vendor dependency (Bash)
+        shell: bash
+        run: |
+          git clone https://codeberg.org/worm-blossom/bab_rs vendor/bab_rs
+          cd vendor/bab_rs
+          git checkout 2dd7466083424eccdecc1c2f43a36fef7acc8a83
+          git apply ../../patches/bab_rs.patch
+
       - name: Install system dependencies (Ubuntu only)
         if: matrix.platform == 'ubuntu-22.04'
         run: |
