@@ -55,6 +55,14 @@ jobs:
           git checkout 2dd7466083424eccdecc1c2f43a36fef7acc8a83
           git apply ../../patches/bab_rs.patch
 
+      - name: Setup willow25 vendor dependency (Bash)
+        shell: bash
+        run: |
+          git clone https://codeberg.org/worm-blossom/willow_rs vendor/willow25
+          cd vendor/willow25
+          git checkout 17b1a057c35a0da3710fdebb57804fad4a19cc3c
+          git apply ../../patches/willow25.patch
+
       - name: Install system dependencies (Ubuntu only)
         if: matrix.platform == 'ubuntu-22.04'
         run: |

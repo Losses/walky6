@@ -179,17 +179,14 @@ function App() {
       
       setIsImporting(true);
       
-      // Store current URL before navigating to progress page
       const previousUrl = urlInput;
       
-      // Navigate to progress page
+      await invoke("clear_content");
       await invoke("navigate_content", { path: "/__progress__" });
       setUrlInput("Importing...");
       
-      // Start import
       await invoke("import_file", { filePath });
       
-      // Import completed, navigate back to previous URL
       setTimeout(() => {
         invoke("navigate_content", { path: previousUrl });
         setIsImporting(false);

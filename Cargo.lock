@@ -2469,12 +2469,9 @@ dependencies = [
 [[package]]
 name = "meadowcap"
 version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ee003aa29db0ba41c6a3fdf5db982915f49e5b95eb7c72f52747c330819fdf2"
 dependencies = [
  "compact_u64",
  "derive_more",
- "order_theory",
  "pollster",
  "signature",
  "ufotofu",
@@ -5142,8 +5139,6 @@ dependencies = [
 [[package]]
 name = "willow-data-model"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a72564d724eb7ba4d84b9750f7e2683e61d9850d007eadd56bd4cd01b1736033"
 dependencies = [
  "anyhash",
  "bon",
@@ -5160,8 +5155,6 @@ dependencies = [
 [[package]]
 name = "willow25"
 version = "0.6.0-alpha.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6477a05fe4a055b0cb95d3eec60e10e5753551bc1d8fb67cb7642b61e6caf377"
 dependencies = [
  "anyhash",
  "async-fs",
@@ -5189,8 +5182,6 @@ dependencies = [
 [[package]]
 name = "willow25-macros"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ffd98f2dc5511548deb36501e3afcf003b4276cec950514613472964e28d4063"
 dependencies = [
  "proc-macro2",
  "quote",

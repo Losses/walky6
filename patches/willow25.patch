@@ -1,0 +1,245 @@
+diff --git a/meadowcap/Cargo.toml b/meadowcap/Cargo.toml
+index 70b1a60..e82aa3c 100644
+--- a/meadowcap/Cargo.toml
++++ b/meadowcap/Cargo.toml
+@@ -10,16 +10,13 @@ test = false
+ 
+ [dependencies]
+ arbitrary = { version = "1.0.2", features = ["derive"], optional = true }
+-compact_u64 = { workspace = true }
+-derive_more = { workspace = true, features = ["display", "error"] }
++compact_u64 = "0.6.0"
++derive_more = { version = "2.1.1", default-features = false, features = ["display", "error"] }
+ pollster = "0.4.0"
+ signature = "2.2.0"
+-ufotofu = { workspace = true, features = ["alloc"] }
++ufotofu = { version = "0.12.4", default-features = false, features = ["alloc"] }
+ willow-data-model = { path = "../willow_data_model", version = "0.7.0" }
+ 
+ [features]
+ default = []
+ dev = ["compact_u64/dev", "dep:arbitrary", "willow-data-model/dev"]
+-
+-[lints]
+-workspace = true
+diff --git a/willow25/Cargo.toml b/willow25/Cargo.toml
+index 63180b4..6562934 100644
+--- a/willow25/Cargo.toml
++++ b/willow25/Cargo.toml
+@@ -13,10 +13,10 @@ async-fs = "2.2.0"
+ bab_rs = "0.8.0"
+ base32 = "0.5.1"
+ base64 = "0.22.1"
+-compact_u64 = { workspace = true }
++compact_u64 = "0.6.0"
+ const-hex = { version = "1.17.0", default-features = false }
+ constant_time_eq = { version = "0.4.2", default-features = false }
+-derive_more = { workspace = true, features = ["display", "error"] }
++derive_more = { version = "2.1.1", default-features = false, features = ["display", "error"] }
+ ed25519-dalek = { version = "2.2.0", features = ["rand_core"] }
+ fjall = "3.0.3"
+ frugal_async = "0.1.0"
+@@ -25,7 +25,7 @@ meadowcap = { path = "../meadowcap", version = "0.5.0" }
+ order_theory = "0.1.6"
+ rand_core = "0.6.4"
+ signature = "2.2.0"
+-ufotofu = { workspace = true }
++ufotofu = { version = "0.12.4", default-features = false }
+ willow-data-model = { path = "../willow_data_model", version = "0.7.0" }
+ willow25-macros = { path = "../willow25_macros", version = "0.1.0" }
+ 
+@@ -50,6 +50,3 @@ dev = [
+ ]
+ drop_format = ["std", "futures-lite"]
+ std = ["hifitime/std", "willow-data-model/std", "ufotofu/std"]
+-
+-[lints]
+-workspace = true
+diff --git a/willow25/src/storage/persistent_store.rs b/willow25/src/storage/persistent_store.rs
+index db8e4d3..5c0ca71 100644
+--- a/willow25/src/storage/persistent_store.rs
++++ b/willow25/src/storage/persistent_store.rs
+@@ -90,7 +90,7 @@ impl Clone for PersistentStore {
+ 
+ struct InnerPersistentStore_ {
+     database: Database,
+-    bab_key_state: KeyState,
++    bab_key_state: RwLock<KeyState>,
+     payload_dir: PathBuf,
+ }
+ 
+@@ -102,7 +102,7 @@ impl InnerPersistentStore_ {
+     {
+         Self {
+             database,
+-            bab_key_state: KeyState::new(),
++            bab_key_state: RwLock::new(KeyState::new()),
+             payload_dir: payload_dir.as_ref().to_path_buf(),
+         }
+     }
+@@ -224,7 +224,7 @@ impl InnerPersistentStore_ {
+         let payload_path_buf =
+             payload_key(self.payload_dir.clone(), namespace_id, subspace_id, path).await;
+ 
+-        SingleSliceStore::<FileBackend>::delete(&mut self.bab_key_state, &payload_path_buf)
++        SingleSliceStore::<FileBackend>::delete(&mut *self.bab_key_state.write().await, &payload_path_buf)
+             .await
+             .map_err(|err| {
+                 PersistentStoreError::Bab(OperationsError::Internal {
+@@ -253,7 +253,7 @@ impl InnerPersistentStore_ {
+         )
+         .await;
+ 
+-        SingleSliceStore::<FileBackend>::load(&mut self.bab_key_state, &payload_key)
++        SingleSliceStore::<FileBackend>::load(&mut *self.bab_key_state.write().await, &payload_key)
+             .await
+             .map_err(|err| {
+                 PersistentStoreError::Bab(OperationsError::Internal {
+@@ -327,7 +327,7 @@ impl PersistentStore {
+         let tmp_key = payload_key(tmp_root.clone(), namespace_id, subspace_id, path).await;
+ 
+         let (mut payload_store, digest) = SingleSliceStore::<FileBackend>::create_and_initialise(
+-            &mut store.bab_key_state,
++            &mut *store.bab_key_state.write().await,
+             tmp_key.clone(),
+             payload_length,
+             payload_producer,
+@@ -364,7 +364,7 @@ impl PersistentStore {
+         for (fjall_key, payload_path_buf) in keys_to_prune {
+             batch.remove(&namespace_keyspace, fjall_key);
+ 
+-            SingleSliceStore::<FileBackend>::delete(&mut store.bab_key_state, &payload_path_buf)
++            SingleSliceStore::<FileBackend>::delete(&mut *store.bab_key_state.write().await, &payload_path_buf)
+                 .await
+                 .map_err(|err| {
+                     CreateEntryError::StoreError(PersistentStoreError::Bab(
+@@ -400,7 +400,7 @@ impl PersistentStore {
+         batch.insert(&namespace_keyspace, entry_key, entry_value);
+         batch.commit()?;
+ 
+-        SingleSliceStore::<FileBackend>::rename(&mut store.bab_key_state, &tmp_key, key).await?;
++        SingleSliceStore::<FileBackend>::rename(&mut *store.bab_key_state.write().await, &tmp_key, key).await?;
+ 
+         payload_store.flush().await?;
+ 
+@@ -435,7 +435,7 @@ impl PersistentStore {
+         let tmp_key = payload_key(tmp_root.clone(), namespace_id, subspace_id, path).await;
+ 
+         let (mut payload_store, digest) = SingleSliceStore::<FileBackend>::create_and_initialise(
+-            &mut store.bab_key_state,
++            &mut *store.bab_key_state.write().await,
+             tmp_key.clone(),
+             payload_length,
+             payload_producer,
+@@ -497,7 +497,7 @@ impl PersistentStore {
+         batch.insert(&namespace_keyspace, entry_key, entry_value);
+         batch.commit()?;
+ 
+-        SingleSliceStore::<FileBackend>::rename(&mut store.bab_key_state, &tmp_key, key).await?;
++        SingleSliceStore::<FileBackend>::rename(&mut *store.bab_key_state.write().await, &tmp_key, key).await?;
+ 
+         payload_store.flush().await?;
+ 
+@@ -676,7 +676,7 @@ impl Store for PersistentStore {
+         for (fjall_key, payload_path_buf) in keys_to_prune {
+             batch.remove(&namespace_keyspace, fjall_key);
+ 
+-            SingleSliceStore::<FileBackend>::delete(&mut store.bab_key_state, &payload_path_buf)
++            SingleSliceStore::<FileBackend>::delete(&mut *store.bab_key_state.write().await, &payload_path_buf)
+                 .await
+                 .map_err(|err| {
+                     PersistentStoreError::Bab(OperationsError::Internal {
+@@ -698,7 +698,7 @@ impl Store for PersistentStore {
+         batch.insert(&namespace_keyspace, entry_key, entry_value);
+ 
+         let mut store = SingleSliceStore::<FileBackend>::create(
+-            &mut store.bab_key_state,
++            &mut *store.bab_key_state.write().await,
+             key,
+             entry.payload_digest().clone().into_bytes().into(),
+             entry.payload_length(),
+@@ -757,7 +757,7 @@ impl Store for PersistentStore {
+     //     for (fjall_key, payload_path_buf) in keys_to_prune {
+     //         batch.remove(&namespace_keyspace, fjall_key);
+ 
+-    //         SingleSliceStore::<FileBackend>::delete(&mut store.bab_key_state, &payload_path_buf)
++    //         SingleSliceStore::<FileBackend>::delete(&mut *store.bab_key_state.write().await, &payload_path_buf)
+     //             .await
+     //             .map_err(|err| {
+     //                 PersistentStoreError::Bab(OperationsError::Internal {
+@@ -787,7 +787,7 @@ impl Store for PersistentStore {
+     //     .await;
+ 
+     //     let (mut payload_store, digest) = SingleSliceStore::<FileBackend>::create_and_initialise(
+-    //         &mut store.bab_key_state,
++    //         &mut *store.bab_key_state.write().await,
+     //         key,
+     //         payload_length,
+     //         payload_producer,
+@@ -1005,7 +1005,7 @@ impl Store for PersistentStore {
+         K: Keylike,
+         C: BulkConsumer<Item = u8>,
+     {
+-        let mut store = self.rc.write().await;
++        let store = self.rc.read().await;
+ 
+         let namespace_keyspace = store
+             .namespace_keyspace(namespace_id)
+@@ -1053,7 +1053,7 @@ impl Store for PersistentStore {
+                 payload_key(store.payload_dir.clone(), namespace_id, &subspace_id, &path).await;
+ 
+             let maybe_slice_store = SingleSliceStore::<FileBackend>::load(
+-                &mut store.bab_key_state,
++                &mut *store.bab_key_state.write().await,
+                 &payload_location_buf,
+             )
+             .await
+@@ -1174,7 +1174,7 @@ impl Store for PersistentStore {
+         K: Keylike,
+         C: BulkConsumer<Item = u8>,
+     {
+-        let mut store = self.rc.write().await;
++        let store = self.rc.read().await;
+ 
+         let payload_buf = payload_key(
+             store.payload_dir.clone(),
+@@ -1185,7 +1185,7 @@ impl Store for PersistentStore {
+         .await;
+ 
+         let maybe_slice_store =
+-            SingleSliceStore::<FileBackend>::load(&mut store.bab_key_state, &payload_buf)
++            SingleSliceStore::<FileBackend>::load(&mut *store.bab_key_state.write().await, &payload_buf)
+                 .await
+                 .map_err(|err| {
+                     GetPayloadSliceError::StoreError(PersistentStoreError::Bab(
+diff --git a/willow_data_model/Cargo.toml b/willow_data_model/Cargo.toml
+index d4f4a92..9d31806 100644
+--- a/willow_data_model/Cargo.toml
++++ b/willow_data_model/Cargo.toml
+@@ -14,15 +14,15 @@ all-features = true
+ 
+ [dependencies]
+ anyhash = "0.1.3"
+-bon = { workspace = true, features = ["experimental-overwritable"] }
++bon = { version = "3.9.1", default-features = false, features = ["experimental-overwritable"] }
+ bytes = { version = "1.10.1", default-features = false }
+-compact_u64 = { workspace = true }
+-derive_more = { workspace = true, features = ["display", "error"] }
++compact_u64 = "0.6.0"
++derive_more = { version = "2.1.1", default-features = false, features = ["display", "error"] }
+ either = { version = "1.10.0", default-features = false }
+ frugal_async = "0.1.0"
+ hifitime = { version = "4.2.2", default-features = false }
+ order_theory = "0.1.6"
+-ufotofu = { workspace = true }
++ufotofu = { version = "0.12.4", default-features = false }
+ 
+ # Dependencies when enabling the `dev` feature:
+ arbitrary = { version = "1.0.2", features = ["derive"], optional = true }
+@@ -40,6 +40,3 @@ dev = [
+   "ufotofu/dev",
+ ]
+ std = ["hifitime/std"]
+-
+-[lints]
+-workspace = true

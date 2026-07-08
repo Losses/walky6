@@ -37,4 +37,21 @@ else
   echo "[vendor] bab_rs already vendored"
 fi
 
+# 3. Vendor willow25
+VENDOR_DIR_WILLOW25="$ROOT/vendor/willow25"
+PATCH_FILE_WILLOW25="$ROOT/patches/willow25.patch"
+UPSTREAM_URL_WILLOW25="https://codeberg.org/worm-blossom/willow_rs"
+UPSTREAM_REV_WILLOW25="17b1a057c35a0da3710fdebb57804fad4a19cc3c"
+
+if [ ! -d "$VENDOR_DIR_WILLOW25/willow25/src" ]; then
+  echo "[vendor] cloning willow25 @ $UPSTREAM_REV_WILLOW25 ..."
+  git clone "$UPSTREAM_URL_WILLOW25" "$VENDOR_DIR_WILLOW25"
+  git -c advice.detachedHead=false -C "$VENDOR_DIR_WILLOW25" checkout "$UPSTREAM_REV_WILLOW25"
+
+  echo "[vendor] applying willow25 patches ..."
+  git -C "$VENDOR_DIR_WILLOW25" apply "$PATCH_FILE_WILLOW25"
+else
+  echo "[vendor] willow25 already vendored"
+fi
+
 echo "[vendor] done"

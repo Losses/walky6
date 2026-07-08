@@ -15,3 +15,4 @@ strip = true
 
 [patch.crates-io]
 bab_rs = { path = "vendor/bab_rs" }
+willow25 = { path = "vendor/willow25/willow25" }

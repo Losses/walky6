@@ -317,6 +317,15 @@ async fn navigate_content(
 }
 
 #[tauri::command]
+async fn clear_content(content_wv: tauri::State<'_, ContentWebview>) -> Result<(), String> {
+    let wv = content_wv.0.lock().map_err(|e| e.to_string())?;
+    if let Some(ref wv) = *wv {
+        wv.eval("document.open(); document.close();").map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
 async fn go_back_content(content_wv: tauri::State<'_, ContentWebview>) -> Result<(), String> {
     let wv = content_wv.0.lock().map_err(|e| e.to_string())?;
     if let Some(ref wv) = *wv {
@@ -374,7 +383,7 @@ mod webview2_handler {
     pub fn register_wildcard_localhost_handler(
         webview: &tauri::Webview,
         store_tx: std::sync::mpsc::Sender<StoreMsg>,
-        _import_state: Arc<ImportState>,
+        import_state: Arc<ImportState>,
     ) -> Result<(), String> {
         let app_handle = webview.app_handle().clone();
         webview.with_webview(move |wv| {
@@ -408,6 +417,7 @@ mod webview2_handler {
             let store_tx_clone = store_tx.clone();
             let env_clone = env.clone();
             let app_handle_clone = app_handle.clone();
+            let import_state_clone = import_state.clone();
 
             let handler = WebResourceRequestedEventHandler::create(Box::new(move |_, args| {
                 let Some(args) = args else { return Ok(()); };
@@ -473,6 +483,138 @@ mod webview2_handler {
                     return Ok(());
                 }
 
+                if is_frontpage && path == "/__progress__" {
+                    let response_body = match app_handle_clone.asset_resolver().get("progress.html".to_string()) {
+                        Some(asset) => asset.bytes,
+                        None => {
+                            let stream = unsafe { SHCreateMemStream(Some(&[])) };
+                            let status = HSTRING::from("Not Found");
+                            let headers = HSTRING::from("");
+                            let response = unsafe {
+                                env_clone.CreateWebResourceResponse(
+                                    stream.as_ref(),
+                                    404,
+                                    PCWSTR::from_raw(status.as_ptr()),
+                                    PCWSTR::from_raw(headers.as_ptr()),
+                                )
+                            };
+                            if let Ok(resp) = response {
+                                let _ = unsafe { args.SetResponse(&resp) };
+                            }
+                            return Ok(());
+                        }
+                    };
+                    let stream = unsafe { SHCreateMemStream(Some(&response_body)) };
+                    let status = HSTRING::from("OK");
+                    let headers = HSTRING::from("Content-Type: text/html; charset=utf-8\r\nAccess-Control-Allow-Origin: *\r\n");
+                    let response = unsafe {
+                        env_clone.CreateWebResourceResponse(
+                            stream.as_ref(),
+                            200,
+                            PCWSTR::from_raw(status.as_ptr()),
+                            PCWSTR::from_raw(headers.as_ptr()),
+                        )
+                    };
+                    if let Ok(resp) = response {
+                        let _ = unsafe { args.SetResponse(&resp) };
+                    }
+                    return Ok(());
+                }
+
+                if is_frontpage && path == "/__progress_api__" {
+                    let is_importing = import_state_clone.is_importing.load(Ordering::Relaxed);
+                    let phase_val = import_state_clone.phase.load(Ordering::Relaxed);
+                    let phase = match phase_val {
+                        0 => "idle",
+                        1 => "decoding",
+                        2 => "importing",
+                        3 => "done",
+                        4 => "error",
+                        _ => "unknown",
+                    };
+                    let processed_bytes = import_state_clone.processed_bytes.load(Ordering::Relaxed);
+                    let total_bytes = import_state_clone.total_bytes.load(Ordering::Relaxed);
+                    let processed_entries = import_state_clone.processed_entries.load(Ordering::Relaxed);
+
+                    let json = format!(
+                        r#"{{"is_importing":{},"phase":"{}","processed_bytes":{},"total_bytes":{},"processed_entries":{}}}"#,
+                        is_importing, phase, processed_bytes, total_bytes, processed_entries
+                    );
+                    let stream = unsafe { SHCreateMemStream(Some(json.as_bytes())) };
+                    let status = HSTRING::from("OK");
+                    let headers = HSTRING::from("Content-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n");
+                    let response = unsafe {
+                        env_clone.CreateWebResourceResponse(
+                            stream.as_ref(),
+                            200,
+                            PCWSTR::from_raw(status.as_ptr()),
+                            PCWSTR::from_raw(headers.as_ptr()),
+                        )
+                    };
+                    if let Ok(resp) = response {
+                        let _ = unsafe { args.SetResponse(&resp) };
+                    }
+                    return Ok(());
+                }
+
+                if is_frontpage {
+                    let is_static_asset = {
+                        let lower = path.to_lowercase();
+                        lower.ends_with(".js") || lower.ends_with(".mjs")
+                            || lower.ends_with(".css") || lower.ends_with(".map")
+                            || lower.ends_with(".png") || lower.ends_with(".jpg")
+                            || lower.ends_with(".jpeg") || lower.ends_with(".webp")
+                            || lower.ends_with(".gif") || lower.ends_with(".svg")
+                            || lower.ends_with(".ico") || lower.ends_with(".avif")
+                            || lower.ends_with(".woff") || lower.ends_with(".woff2")
+                            || lower.ends_with(".ttf") || lower.ends_with(".otf")
+                    };
+                    let is_asset = is_static_asset
+                        || path.starts_with("/_app/")
+                        || path.starts_with("/assets/")
+                        || path.starts_with("/images/")
+                        || path.starts_with("/fonts/");
+
+                    if is_asset {
+                        let key = path.trim_start_matches('/');
+                        match app_handle_clone.asset_resolver().get(key.to_string()) {
+                            Some(asset) => {
+                                let stream = unsafe { SHCreateMemStream(Some(&asset.bytes)) };
+                                let status = HSTRING::from("OK");
+                                let headers = HSTRING::from(format!("Content-Type: {}\r\nAccess-Control-Allow-Origin: *\r\n", asset.mime_type));
+                                let response = unsafe {
+                                    env_clone.CreateWebResourceResponse(
+                                        stream.as_ref(),
+                                        200,
+                                        PCWSTR::from_raw(status.as_ptr()),
+                                        PCWSTR::from_raw(headers.as_ptr()),
+                                    )
+                                };
+                                if let Ok(resp) = response {
+                                    let _ = unsafe { args.SetResponse(&resp) };
+                                }
+                            }
+                            None => {
+                                let stream = unsafe { SHCreateMemStream(Some(&[])) };
+                                let status = HSTRING::from("Not Found");
+                                let headers = HSTRING::from("");
+                                let response = unsafe {
+                                    env_clone.CreateWebResourceResponse(
+                                        stream.as_ref(),
+                                        404,
+                                        PCWSTR::from_raw(status.as_ptr()),
+                                        PCWSTR::from_raw(headers.as_ptr()),
+                                    )
+                                };
+                                if let Ok(resp) = response {
+                                    let _ = unsafe { args.SetResponse(&resp) };
+                                }
+                            }
+                        }
+                        return Ok(());
+                    }
+                }
+
                 if is_frontpage {
                     let deferral = unsafe { args.GetDeferral() };
                     let store_tx_inner = store_tx_clone.clone();
@@ -487,7 +629,7 @@ mod webview2_handler {
                         return Ok(());
                     }
 
-                    match resp_rx.recv() {
+                    match resp_rx.recv_timeout(std::time::Duration::from_secs(5)) {
                         Ok(Ok(html)) => {
                             let body = rewrite_urls(html.as_bytes(), "text/html; charset=utf-8");
                             let stream = unsafe { SHCreateMemStream(Some(&body)) };
@@ -508,12 +650,12 @@ mod webview2_handler {
                         }
                         _ => {
                             let stream = unsafe { SHCreateMemStream(Some(&[])) };
-                            let status = HSTRING::from("Internal Server Error");
-                            let headers = HSTRING::from("");
+                            let status = HSTRING::from("Service Unavailable");
+                            let headers = HSTRING::from("Retry-After: 5\r\nAccess-Control-Allow-Origin: *\r\n");
                             let response = unsafe {
                                 env_inner.CreateWebResourceResponse(
                                     stream.as_ref(),
-                                    500,
+                                    503,
                                     PCWSTR::from_raw(status.as_ptr()),
                                     PCWSTR::from_raw(headers.as_ptr()),
                                 )
@@ -559,7 +701,7 @@ mod webview2_handler {
                         }).is_err() {
                             break;
                         }
-                        match resp_rx.recv() {
+                        match resp_rx.recv_timeout(std::time::Duration::from_secs(5)) {
                             Ok(Ok(Some((mime, bytes, etag)))) => {
                                 found = Some((mime, bytes, etag));
                                 break;
@@ -847,16 +989,21 @@ pub fn run() {
                                     .status(500)
                                     .body(b"Store thread died".to_vec()).unwrap();
                             }
-                            match resp_rx.recv().unwrap() {
-                                Ok(Some((mime, bytes, etag))) => {
+                            match resp_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+                                Ok(Ok(Some((mime, bytes, etag)))) => {
                                     found = Some((mime, bytes, etag));
                                     break;
                                 }
-                                Ok(None) => {}
-                                Err(e) => {
+                                Ok(Ok(None)) => {}
+                                Ok(Err(e)) => {
                                     return tauri::http::Response::builder()
-                                        .status(500)
-                                        .body(format!("Content error: {e}").into_bytes()).unwrap();
+                                        .status(503)
+                                        .body(format!("Store busy: {e}").into_bytes()).unwrap();
+                                }
+                                Err(_) => {
+                                    return tauri::http::Response::builder()
+                                        .status(503)
+                                        .body(b"Store busy (timeout)".to_vec()).unwrap();
                                 }
                             }
                         }
@@ -927,8 +1074,8 @@ pub fn run() {
                                 .status(500)
                                 .body(b"Store thread died".to_vec()).unwrap();
                         }
-                        match resp_rx.recv().unwrap() {
-                            Ok(html) => {
+                        match resp_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+                            Ok(Ok(html)) => {
                                 let body = rewrite_urls(html.as_bytes(), "text/html; charset=utf-8");
                                 tauri::http::Response::builder()
                                     .status(200)
@@ -937,10 +1084,16 @@ pub fn run() {
                                     .body(body)
                                     .unwrap()
                             }
-                            Err(e) => {
+                            Ok(Err(e)) => {
                                 tauri::http::Response::builder()
-                                    .status(500)
-                                    .body(format!("Frontpage error: {e}").into_bytes())
+                                    .status(503)
+                                    .body(format!("Store busy: {e}").into_bytes())
+                                    .unwrap()
+                            }
+                            Err(_) => {
+                                tauri::http::Response::builder()
+                                    .status(503)
+                                    .body(b"Store busy (timeout)".to_vec())
                                     .unwrap()
                             }
                         }
@@ -1155,6 +1308,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_base_url,
             navigate_content,
+            clear_content,
             import_file,
             pick_file,
             go_back_content,
