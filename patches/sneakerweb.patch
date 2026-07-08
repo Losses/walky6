@@ -1,16 +1,23 @@
-diff -ruN '--exclude=.git' '--exclude=Cargo.lock' '--exclude=.gitignore' /tmp/snk-vendor/src/import.rs vendor/sneakerweb/src/import.rs
---- /tmp/snk-vendor/src/import.rs	2026-07-07 17:00:48.170981550 -0400
-+++ vendor/sneakerweb/src/import.rs	2026-07-07 14:23:01.469156823 -0400
-@@ -4,7 +4,7 @@
+diff --git a/src/import.rs b/src/import.rs
+index 516aa52..36d4d42 100644
+--- a/src/import.rs
++++ b/src/import.rs
+@@ -4,7 +4,13 @@ use smol::{
      fs::File,
      io::{AsyncBufReadExt, BufReader},
  };
 -use std::{collections::BTreeSet, path::PathBuf};
-+use std::{collections::BTreeSet, path::PathBuf, sync::Arc, sync::atomic::{AtomicU32, AtomicU64, Ordering}};
++use std::{
++    collections::BTreeSet,
++    path::PathBuf,
++    sync::Arc,
++    sync::atomic::{AtomicU32, AtomicU64, Ordering},
++    time::Instant,
++};
  use ufotofu::{
      ExpectedFinalError, ProduceAtLeastError,
      codec::{Blame, DecodeError},
-@@ -25,23 +25,46 @@
+@@ -25,43 +31,95 @@ use crate::util::{SNEAKERWEB_NAMESPACE_ID_BYTES, domain_style, get_domain, hmm,
  
  #[derive(Args)]
  pub struct ImportArgs {
@@ -20,7 +27,8 @@ diff -ruN '--exclude=.git' '--exclude=Cargo.lock' '--exclude=.gitignore' /tmp/sn
      pub mode: Option<ImportMode>,
  }
  
- #[derive(Clone, ValueEnum, Default)]
+-#[derive(Clone, ValueEnum, Default)]
++#[derive(Clone, Debug, ValueEnum, Default)]
  pub enum ImportMode {
 -    /// Import everything from the .snk file which you have not explicitly blocked. This is the default behaviour.
      #[default]
@@ -55,14 +63,73 @@ diff -ruN '--exclude=.git' '--exclude=Cargo.lock' '--exclude=.gitignore' /tmp/sn
 +}
 +
 +pub async fn import_sneak(args: &ImportArgs, progress: &ProgressHandle) -> Result<()> {
++    let sneakerweb_fs_path = sneakerweb_dir().await?;
++    let mut store = PersistentStore::new(&sneakerweb_fs_path).await?;
++    import_sneak_into_store(args, progress, &mut store).await
++}
++
++pub async fn import_sneak_into_store(
++    args: &ImportArgs,
++    progress: &ProgressHandle,
++    store: &mut PersistentStore,
++) -> Result<()> {
++    let start = Instant::now();
++    eprintln!("[import_sneak] === START import_sneak ===");
++    eprintln!("[import_sneak] file path: {:?}", args.src);
++    eprintln!("[import_sneak] mode: {:?}", args.mode);
++
      let file = File::open(&args.src).await?;
 +    let file_size = file.metadata().await.map(|m| m.len()).unwrap_or(0);
++    eprintln!("[import_sneak] file opened, size: {} bytes", file_size);
++
 +    progress.total_bytes.store(file_size, Ordering::Relaxed);
 +    progress.phase.store(PHASE_DECODING, Ordering::Relaxed);
++    eprintln!("[import_sneak] phase set to PHASE_DECODING (1)");
++
      let drop_producer = reader_to_bulk_producer(file, new_unbounded_elastic());
++    eprintln!("[import_sneak] drop_producer created");
++
      let sneakerweb_fs_path = sneakerweb_dir().await?;
-     let namespace_id = NamespaceId::from_bytes(&SNEAKERWEB_NAMESPACE_ID_BYTES);
-@@ -86,6 +109,9 @@
+-    let namespace_id = NamespaceId::from_bytes(&SNEAKERWEB_NAMESPACE_ID_BYTES);
++    eprintln!("[import_sneak] sneakerweb dir: {:?}", sneakerweb_fs_path);
+ 
+-    let mut store = PersistentStore::new(&sneakerweb_fs_path).await?;
++    let namespace_id = NamespaceId::from_bytes(&SNEAKERWEB_NAMESPACE_ID_BYTES);
++    eprintln!("[import_sneak] namespace_id set");
+ 
+     let allowed = match args.mode.clone().unwrap_or_default() {
+-        ImportMode::All => None,
++        ImportMode::All => {
++            eprintln!("[import_sneak] ImportMode::All (no filtering)");
++            None
++        }
+         ImportMode::Familiar => {
++            eprintln!("[import_sneak] ImportMode::Familiar, loading known subspaces...");
+             let mut allowed = BTreeSet::new();
+             store
+                 .subspaces(&namespace_id, &mut (&mut allowed).into_consumer())
+                 .await?;
++            eprintln!("[import_sneak] known subspaces count: {}", allowed.len());
+             Some(allowed)
+         }
+     };
+ 
+     let mut decoder = DropDecoder::new(drop_producer);
++    eprintln!("[import_sneak] DropDecoder created");
+ 
+     let blocklist_path = sneakerweb_fs_path.join("blocked");
++    eprintln!("[import_sneak] blocklist path: {:?}, exists: {}", blocklist_path, blocklist_path.exists());
+ 
+     let mut blocked = BTreeSet::new();
+ 
+@@ -82,10 +140,16 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
+             blocked.insert(domain_id);
+             line.clear();
+         }
++        eprintln!("[import_sneak] blocklist loaded, {} blocked domains", blocked.len());
++    } else {
++        eprintln!("[import_sneak] no blocklist found, no domains blocked");
+     }
  
      let mut skipped = BTreeSet::new();
  
@@ -72,7 +139,7 @@ diff -ruN '--exclude=.git' '--exclude=Cargo.lock' '--exclude=.gitignore' /tmp/sn
      let mut filtering_decoder =
          ClosureProducer::<_, (DropSliceMetadata, SliceStreamProducer<_>), (), Error>::new(
              async || {
-@@ -96,14 +122,21 @@
+@@ -96,14 +160,21 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
                          return Ok(Right(()));
                      };
  
@@ -95,7 +162,7 @@ diff -ruN '--exclude=.git' '--exclude=Cargo.lock' '--exclude=.gitignore' /tmp/sn
                                      return Ok(Left((metadata, slice_stream)));
                                  }
                                  skip_reason = "unfamiliar";
-@@ -121,9 +154,10 @@
+@@ -121,9 +192,10 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
  
                      skipped.insert(domain_id.clone());
  
@@ -107,7 +174,7 @@ diff -ruN '--exclude=.git' '--exclude=Cargo.lock' '--exclude=.gitignore' /tmp/sn
                                  "an entry in the .snk file was too large for this device",
                              )?,
                          )
-@@ -132,6 +166,8 @@
+@@ -132,6 +204,8 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
                              Ok(()) => anyhow!("unexpected end of .snk file"),
                              Err(err) => map_decode_err(err),
                          })?;
@@ -116,31 +183,83 @@ diff -ruN '--exclude=.git' '--exclude=Cargo.lock' '--exclude=.gitignore' /tmp/sn
                      slice_stream
                          .produce_final()
                          .await
-@@ -145,6 +181,8 @@
+@@ -145,32 +219,50 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
              },
          );
  
+-    import_drop(&mut store, &mut filtering_decoder, true)
++    eprintln!("[import_sneak] filtering_decoder created, setting phase to PHASE_IMPORTING (2)...");
 +    progress.phase.store(PHASE_IMPORTING, Ordering::Relaxed);
++    eprintln!("[import_sneak] phase set to PHASE_IMPORTING, calling import_drop... (decoding took {:?})", start.elapsed());
 +
-     import_drop(&mut store, &mut filtering_decoder, true)
++    import_drop(store, &mut filtering_decoder, true)
          .await
-         .map_err(|err| match err {
-@@ -169,7 +207,11 @@
+-        .map_err(|err| match err {
+-            ImportDropError::SliceStreamBytesMismatch => {
+-                anyhow!("an entry in the .snk file had incorrect metadata")
+-            }
+-            ImportDropError::ImportProducerError(err) => err,
+-            ImportDropError::SliceProducerError(err) => map_decode_err(err),
+-            ImportDropError::StoreError(err) => err.into(),
+-            ImportDropError::VerificationError => {
+-                anyhow!("an entry in the .snk file could not be verified")
+-            }
+-            ImportDropError::EntryDeleted => {
+-                anyhow!("an entry was deleted concurrently with being imported")
+-            }
+-            ImportDropError::ArchitectureTooSmall => {
+-                anyhow!("an entry in the .snk file was too large for this device")
+-            }
+-            ImportDropError::PartialPayloadSliceEncountered => {
+-                unreachable!("we are not treating incompatible slices as fatal errors")
++        .map_err(|err| {
++            eprintln!("[import_sneak] import_drop ERROR: {:?}", err);
++            match err {
++                ImportDropError::SliceStreamBytesMismatch => {
++                    anyhow!("an entry in the .snk file had incorrect metadata")
++                }
++                ImportDropError::ImportProducerError(err) => err,
++                ImportDropError::SliceProducerError(err) => map_decode_err(err),
++                ImportDropError::StoreError(err) => err.into(),
++                ImportDropError::VerificationError => {
++                    anyhow!("an entry in the .snk file could not be verified")
++                }
++                ImportDropError::EntryDeleted => {
++                    anyhow!("an entry was deleted concurrently with being imported")
++                }
++                ImportDropError::ArchitectureTooSmall => {
++                    anyhow!("an entry in the .snk file was too large for this device")
++                }
++                ImportDropError::PartialPayloadSliceEncountered => {
++                    unreachable!("we are not treating incompatible slices as fatal errors")
++                }
+             }
          })?;
  
++    eprintln!("[import_sneak] import_drop completed OK, flushing store... (total elapsed: {:?})", start.elapsed());
++
      match store.flush().await {
 -        Ok(_) => Ok(()),
+-        Err(_) => bail!("failed to flush changes to the sneakerweb store"),
 +        Ok(_) => {
++            eprintln!("[import_sneak] store flushed, setting phase to PHASE_DONE");
 +            progress.phase.store(PHASE_DONE, Ordering::Relaxed);
 +            progress.processed_bytes.store(file_size, Ordering::Relaxed);
++            eprintln!("[import_sneak] === DONE (took {:?}) ===", start.elapsed());
 +            Ok(())
 +        }
-         Err(_) => bail!("failed to flush changes to the sneakerweb store"),
++        Err(_) => {
++            eprintln!("[import_sneak] store flush FAILED");
++            bail!("failed to flush changes to the sneakerweb store")
++        }
      }
  }
-diff -ruN '--exclude=.git' '--exclude=Cargo.lock' '--exclude=.gitignore' /tmp/snk-vendor/src/lib.rs vendor/sneakerweb/src/lib.rs
---- /tmp/snk-vendor/src/lib.rs	1969-12-31 19:00:00.000000000 -0500
-+++ vendor/sneakerweb/src/lib.rs	2026-07-07 17:26:10.405877330 -0400
+ 
+diff --git a/src/lib.rs b/src/lib.rs
+new file mode 100644
+index 0000000..8cd4489
+--- /dev/null
++++ b/src/lib.rs
 @@ -0,0 +1,11 @@
 +pub mod block;
 +pub mod commands;
@@ -153,10 +272,11 @@ diff -ruN '--exclude=.git' '--exclude=Cargo.lock' '--exclude=.gitignore' /tmp/sn
 +pub mod logo;
 +
 +pub use willow25::storage::PersistentStore;
-diff -ruN '--exclude=.git' '--exclude=Cargo.lock' '--exclude=.gitignore' /tmp/snk-vendor/src/main.rs vendor/sneakerweb/src/main.rs
---- /tmp/snk-vendor/src/main.rs	2026-07-07 17:00:48.170981550 -0400
-+++ vendor/sneakerweb/src/main.rs	2026-07-07 14:23:01.469192319 -0400
-@@ -46,8 +46,9 @@
+diff --git a/src/main.rs b/src/main.rs
+index 8dddd90..f29230f 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -46,8 +46,9 @@ fn main() {
              }
              Commands::Import(import_args) => {
                  // Import the contents of a drop into the persistent store.
@@ -167,7 +287,7 @@ diff -ruN '--exclude=.git' '--exclude=Cargo.lock' '--exclude=.gitignore' /tmp/sn
                          Ok(_) => {
                              yay(&format!(
                                  "successfully imported from {}",
-@@ -71,8 +72,9 @@
+@@ -71,8 +72,9 @@ fn main() {
                  })
              }
              &Commands::Serve => {
@@ -178,10 +298,11 @@ diff -ruN '--exclude=.git' '--exclude=Cargo.lock' '--exclude=.gitignore' /tmp/sn
                          Ok(()) => (), // I don't think we have anything interesting to say when the server shuts down?
                          Err(err) => oh_no(&format!("{}", err)).await,
                      }
-diff -ruN '--exclude=.git' '--exclude=Cargo.lock' '--exclude=.gitignore' /tmp/snk-vendor/src/serve.rs vendor/sneakerweb/src/serve.rs
---- /tmp/snk-vendor/src/serve.rs	2026-07-07 17:00:48.170981550 -0400
-+++ vendor/sneakerweb/src/serve.rs	2026-07-07 20:22:44.852670315 -0400
-@@ -37,12 +37,12 @@
+diff --git a/src/serve.rs b/src/serve.rs
+index fd4597a..a32620e 100644
+--- a/src/serve.rs
++++ b/src/serve.rs
+@@ -37,12 +37,12 @@ use crate::util::sneakerweb_dir;
  use crate::util::yay;
  use crate::util::{SNEAKERWEB_NAMESPACE_ID_BYTES, get_domain};
  
@@ -198,7 +319,7 @@ diff -ruN '--exclude=.git' '--exclude=Cargo.lock' '--exclude=.gitignore' /tmp/sn
      ))
      .await;
  
-@@ -50,11 +50,8 @@
+@@ -50,11 +50,8 @@ pub async fn start_server() -> Result<()> {
  
      while let Some(stream) = incoming.next().await {
          let mut stream = stream?;
@@ -211,7 +332,7 @@ diff -ruN '--exclude=.git' '--exclude=Cargo.lock' '--exclude=.gitignore' /tmp/sn
                  stream
                      .write_all(format!("HTTP/1.1 404 NOT FOUND\r\n\r\n{err}\r\n").as_bytes())
                      .await?;
-@@ -66,7 +63,7 @@
+@@ -66,7 +63,7 @@ pub async fn start_server() -> Result<()> {
      Ok(())
  }
  
@@ -220,7 +341,7 @@ diff -ruN '--exclude=.git' '--exclude=Cargo.lock' '--exclude=.gitignore' /tmp/sn
      Domain,
      Newest,
      Oldest,
-@@ -80,7 +77,7 @@
+@@ -80,7 +77,7 @@ enum Domain {
  
  const FRONT_CSS: &str = include_str!("frontpage.css");
  
@@ -229,7 +350,7 @@ diff -ruN '--exclude=.git' '--exclude=Cargo.lock' '--exclude=.gitignore' /tmp/sn
      let mut buf_reader = BufReader::new(stream.clone());
      let mut headers = [httparse::EMPTY_HEADER; 64];
      let mut req = httparse::Request::new(&mut headers);
-@@ -89,19 +86,29 @@
+@@ -89,19 +86,29 @@ async fn handle_connection(stream: TcpStream) -> Result<()> {
  
      req.parse(buf_reader.buffer())?;
  
@@ -266,7 +387,7 @@ diff -ruN '--exclude=.git' '--exclude=Cargo.lock' '--exclude=.gitignore' /tmp/sn
          if header.name == "Host" {
              let hostname_str = std::str::from_utf8(header.value).unwrap();
  
-@@ -119,19 +126,11 @@
+@@ -119,19 +126,11 @@ async fn handle_connection(stream: TcpStream) -> Result<()> {
                  hostname = host_fst.to_string();
              } else if host_fst != "sneakerweb" {
                  bail!("hostname {} wasn't a Subspace ID or the homepage", host_fst)
@@ -288,7 +409,7 @@ diff -ruN '--exclude=.git' '--exclude=Cargo.lock' '--exclude=.gitignore' /tmp/sn
              };
  
              if let Some(_whatever) = host_iterator.next() {
-@@ -140,17 +139,26 @@
+@@ -140,17 +139,26 @@ async fn handle_connection(stream: TcpStream) -> Result<()> {
  
              parsed_hostname = true;
          }
@@ -318,7 +439,7 @@ diff -ruN '--exclude=.git' '--exclude=Cargo.lock' '--exclude=.gitignore' /tmp/sn
      if let Some(path) = req.path {
          url_to_parse.push_str(path);
      }
-@@ -302,11 +310,11 @@
+@@ -302,11 +310,11 @@ async fn handle_connection(stream: TcpStream) -> Result<()> {
      }
  }
  
@@ -335,7 +456,7 @@ diff -ruN '--exclude=.git' '--exclude=Cargo.lock' '--exclude=.gitignore' /tmp/sn
  }
  
  impl DomainListing {
-@@ -335,19 +343,19 @@
+@@ -335,19 +343,19 @@ impl DomainListing {
          }
      }
  
@@ -360,7 +481,7 @@ diff -ruN '--exclude=.git' '--exclude=Cargo.lock' '--exclude=.gitignore' /tmp/sn
          let fmt = Formatter::new(
              self.last_updated.into(),
              Format::from_str("%Y-%m-%d").unwrap(),
-@@ -379,7 +387,7 @@
+@@ -379,7 +387,7 @@ impl Renderable for DomainListing {
              Some(url) => {
                  rsx! {
                      <li>
@@ -369,7 +490,7 @@ diff -ruN '--exclude=.git' '--exclude=Cargo.lock' '--exclude=.gitignore' /tmp/sn
                          (SiteMetadata { listing: self })
                      </li>
                  }
-@@ -403,7 +411,7 @@
+@@ -403,7 +411,7 @@ impl Renderable for DomainListing {
      }
  }
  
@@ -378,7 +499,7 @@ diff -ruN '--exclude=.git' '--exclude=Cargo.lock' '--exclude=.gitignore' /tmp/sn
      store: &mut PersistentStore,
      order: FrontPageOrder,
      buffer: &mut Buffer,
-@@ -528,3 +536,98 @@
+@@ -528,3 +536,98 @@ async fn render_frontpage(
  
      Ok(())
  }
@@ -477,10 +598,11 @@ diff -ruN '--exclude=.git' '--exclude=Cargo.lock' '--exclude=.gitignore' /tmp/sn
 +        .context("could not open sneakerweb storage")?;
 +    get_entry_with_store(&mut store, subspace_hex, entry_path).await
 +}
-diff -ruN '--exclude=.git' '--exclude=Cargo.lock' '--exclude=.gitignore' /tmp/snk-vendor/src/util.rs vendor/sneakerweb/src/util.rs
---- /tmp/snk-vendor/src/util.rs	2026-07-07 17:00:48.170981550 -0400
-+++ vendor/sneakerweb/src/util.rs	2026-07-07 14:23:01.469219600 -0400
-@@ -31,6 +31,12 @@
+diff --git a/src/util.rs b/src/util.rs
+index 4406952..02fa524 100644
+--- a/src/util.rs
++++ b/src/util.rs
+@@ -31,6 +31,12 @@ where
  
  /// Retrieves the path within the user's home directory where sneakerweb configuration and data are located.
  pub async fn sneakerweb_dir() -> Result<PathBuf, Error> {
@@ -493,7 +615,7 @@ diff -ruN '--exclude=.git' '--exclude=Cargo.lock' '--exclude=.gitignore' /tmp/sn
      let mut store_path = home_dir().ok_or(Error::new(
          ErrorKind::NotFound,
          "could not determine user home directory",
-@@ -41,6 +47,13 @@
+@@ -41,6 +47,13 @@ pub async fn sneakerweb_dir() -> Result<PathBuf, Error> {
      Ok(store_path)
  }
  
