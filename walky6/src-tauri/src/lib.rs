@@ -25,23 +25,18 @@ fn start_store_thread(store_dir: PathBuf) -> std::sync::mpsc::Sender<StoreMsg> {
         while let Ok(msg) = rx.recv() {
             match msg {
                 StoreMsg::Frontpage { order, resp } => {
-                    eprintln!("[store_thread] Frontpage order='{}'", order);
                     let result = smol::block_on(
                         sneakerweb::serve::render_frontpage_with_store(&mut store, &order),
                     );
-                    eprintln!("[store_thread] Frontpage result: {:?}", result.as_ref().map(|h| h.len()));
                     let _ = resp.send(result);
                 }
                 StoreMsg::GetEntry { host, path, resp } => {
-                    eprintln!("[store_thread] GetEntry host='{}' path='{}'", host, path);
                     let result = smol::block_on(
                         sneakerweb::serve::get_entry_with_store(&mut store, &host, &path),
                     );
-                    eprintln!("[store_thread] GetEntry result: {:?}", result.as_ref().map(|opt| opt.as_ref().map(|(mime, bytes, etag)| (mime.clone(), bytes.len(), etag.clone()))));
                     let _ = resp.send(result);
                 }
                 StoreMsg::Import { file_path, handle, resp } => {
-                    eprintln!("[store_thread] Import received, running in store thread...");
                     let args = sneakerweb::import::ImportArgs {
                         src: file_path,
                         mode: None,
@@ -49,7 +44,6 @@ fn start_store_thread(store_dir: PathBuf) -> std::sync::mpsc::Sender<StoreMsg> {
                     let result = smol::block_on(
                         sneakerweb::import::import_sneak_into_store(&args, &handle, &mut store),
                     );
-                    eprintln!("[store_thread] Import completed, result: {:?}", result);
                     let _ = resp.send(result);
                 }
             }
