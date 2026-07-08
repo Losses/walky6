@@ -366,7 +366,6 @@ mod webview2_handler {
     use webview2_com::Microsoft::Web::WebView2::Win32::*;
     use webview2_com::WebResourceRequestedEventHandler;
     use windows::core::{HSTRING, PCWSTR};
-    use windows::Win32::System::Com::IStream;
     use windows::Win32::UI::Shell::SHCreateMemStream;
     use std::fmt::Write;
 
@@ -375,7 +374,7 @@ mod webview2_handler {
     pub fn register_wildcard_localhost_handler(
         webview: &tauri::Webview,
         store_tx: std::sync::mpsc::Sender<StoreMsg>,
-        import_state: Arc<ImportState>,
+        _import_state: Arc<ImportState>,
     ) -> Result<(), String> {
         webview.with_webview(move |wv| {
             let controller = wv.controller();
@@ -391,7 +390,6 @@ mod webview2_handler {
             }
 
             let store_tx_clone = store_tx.clone();
-            let import_state_clone = import_state.clone();
             let env_clone = env.clone();
 
             let handler = WebResourceRequestedEventHandler::create(Box::new(move |_, args| {
