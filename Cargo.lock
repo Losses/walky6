@@ -280,8 +280,6 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 [[package]]
 name = "bab_rs"
 version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5dc510e3f0c5a8a3d3a9229c3f3b38ebb3d154f22e0d577c308cffd907355d4d"
 dependencies = [
  "anyhash",
  "arrayref",

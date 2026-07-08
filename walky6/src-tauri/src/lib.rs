@@ -8,6 +8,11 @@ const TOOLBAR_H: u32 = 90;
 enum StoreMsg {
     Frontpage { order: String, resp: std::sync::mpsc::Sender<anyhow::Result<String>> },
     GetEntry { host: String, path: String, resp: std::sync::mpsc::Sender<anyhow::Result<Option<(String, Vec<u8>, String)>>> },
+    Import {
+        file_path: PathBuf,
+        handle: sneakerweb::import::ProgressHandle,
+        resp: std::sync::mpsc::Sender<anyhow::Result<()>>,
+    },
 }
 
 fn start_store_thread(store_dir: PathBuf) -> std::sync::mpsc::Sender<StoreMsg> {
@@ -20,15 +25,31 @@ fn start_store_thread(store_dir: PathBuf) -> std::sync::mpsc::Sender<StoreMsg> {
         while let Ok(msg) = rx.recv() {
             match msg {
                 StoreMsg::Frontpage { order, resp } => {
+                    eprintln!("[store_thread] Frontpage order='{}'", order);
                     let result = smol::block_on(
                         sneakerweb::serve::render_frontpage_with_store(&mut store, &order),
                     );
+                    eprintln!("[store_thread] Frontpage result: {:?}", result.as_ref().map(|h| h.len()));
                     let _ = resp.send(result);
                 }
                 StoreMsg::GetEntry { host, path, resp } => {
+                    eprintln!("[store_thread] GetEntry host='{}' path='{}'", host, path);
                     let result = smol::block_on(
                         sneakerweb::serve::get_entry_with_store(&mut store, &host, &path),
                     );
+                    eprintln!("[store_thread] GetEntry result: {:?}", result.as_ref().map(|opt| opt.as_ref().map(|(mime, bytes, etag)| (mime.clone(), bytes.len(), etag.clone()))));
+                    let _ = resp.send(result);
+                }
+                StoreMsg::Import { file_path, handle, resp } => {
+                    eprintln!("[store_thread] Import received, running in store thread...");
+                    let args = sneakerweb::import::ImportArgs {
+                        src: file_path,
+                        mode: None,
+                    };
+                    let result = smol::block_on(
+                        sneakerweb::import::import_sneak_into_store(&args, &handle, &mut store),
+                    );
+                    eprintln!("[store_thread] Import completed, result: {:?}", result);
                     let _ = resp.send(result);
                 }
             }
@@ -36,6 +57,8 @@ fn start_store_thread(store_dir: PathBuf) -> std::sync::mpsc::Sender<StoreMsg> {
     });
     tx
 }
+
+pub struct StoreTx(pub(crate) std::sync::mpsc::Sender<StoreMsg>);
 
 pub struct ContentWebview(pub std::sync::Arc<Mutex<Option<tauri::Webview>>>);
 
@@ -142,49 +165,92 @@ fn progress_to_event(handle: &sneakerweb::import::ProgressHandle) -> ImportProgr
     }
 }
 
-fn run_import_internal(app: AppHandle, file_path: PathBuf, import_state: Arc<ImportState>) -> anyhow::Result<()> {
+fn run_import_internal(app: AppHandle, file_path: PathBuf, import_state: Arc<ImportState>, store_tx: std::sync::mpsc::Sender<StoreMsg>) -> anyhow::Result<()> {
+    eprintln!("[run_import_internal] === START ===");
+    eprintln!("[run_import_internal] file_path: {:?}", file_path);
+
     import_state.is_importing.store(true, Ordering::Relaxed);
     import_state.phase.store(1, Ordering::Relaxed);
     import_state.processed_bytes.store(0, Ordering::Relaxed);
     import_state.processed_entries.store(0, Ordering::Relaxed);
+    eprintln!("[run_import_internal] import_state initialized (phase=1/decoding)");
 
-    let args = sneakerweb::import::ImportArgs {
-        src: file_path,
-        mode: None,
-    };
     let handle = sneakerweb::import::ProgressHandle::new();
     import_state.total_bytes.store(0, Ordering::Relaxed);
+    eprintln!("[run_import_internal] ProgressHandle created");
 
     let poller_handle = handle.clone();
+    let signal_handle = handle.clone();
     let app_clone = app.clone();
     let state_clone = import_state.clone();
 
-    let poller = std::thread::spawn(move || loop {
-        let progress = progress_to_event(&poller_handle);
-        if progress.total > 0 {
-            state_clone.total_bytes.store(progress.total, Ordering::Relaxed);
-        }
-        state_clone.phase.store(poller_handle.phase.load(Ordering::Relaxed), Ordering::Relaxed);
-        state_clone.processed_bytes.store(progress.processed, Ordering::Relaxed);
-        state_clone.processed_entries.store(progress.processed_entries, Ordering::Relaxed);
+    let poller = std::thread::spawn(move || {
+        eprintln!("[poller] thread started");
+        loop {
+            let progress = progress_to_event(&poller_handle);
+            eprintln!(
+                "[poller] poll: phase={}, processed={}, total={}, entries={}, msg={}",
+                progress.phase, progress.processed, progress.total, progress.processed_entries, progress.message
+            );
 
-        let is_done = progress.phase == "done";
-        let _ = app_clone.emit("import-progress", progress);
-        if is_done {
-            break;
+            if progress.total > 0 {
+                state_clone.total_bytes.store(progress.total, Ordering::Relaxed);
+                eprintln!("[poller] updated total_bytes -> {}", progress.total);
+            }
+            state_clone.phase.store(poller_handle.phase.load(Ordering::Relaxed), Ordering::Relaxed);
+            state_clone.processed_bytes.store(progress.processed, Ordering::Relaxed);
+            state_clone.processed_entries.store(progress.processed_entries, Ordering::Relaxed);
+
+            let is_done = progress.phase == "done";
+            let emit_result = app_clone.emit("import-progress", progress.clone());
+            eprintln!("[poller] emit result: {:?}, is_done: {}", emit_result, is_done);
+            if is_done {
+                eprintln!("[poller] phase is done, breaking out of poll loop");
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
         }
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        eprintln!("[poller] thread exiting");
     });
 
-    let result = smol::block_on(sneakerweb::import::import_sneak(&args, &handle));
+    let (resp_tx, resp_rx) = std::sync::mpsc::channel::<anyhow::Result<()>>();
+    eprintln!("[run_import_internal] sending Import to store thread...");
+    store_tx
+        .send(StoreMsg::Import {
+            file_path,
+            handle,
+            resp: resp_tx,
+        })
+        .map_err(|_| anyhow::anyhow!("store thread died"))?;
+
+    eprintln!("[run_import_internal] waiting for import result from store thread...");
+    let import_result = resp_rx
+        .recv()
+        .map_err(|_| anyhow::anyhow!("store thread channel closed"))?;
+    // import_result is anyhow::Result<()> from import_sneak_into_store
+
+    // Signal poller to stop (in case import errored without setting PHASE_DONE)
+    eprintln!("[run_import_internal] signaling poller to stop via signal_handle");
+    signal_handle.phase.store(sneakerweb::import::PHASE_DONE, Ordering::Relaxed);
+
+    eprintln!("[run_import_internal] waiting for poller to join...");
     let _ = poller.join();
+    eprintln!("[run_import_internal] poller joined");
 
-    if result.is_ok() {
-        import_state.phase.store(3, Ordering::Relaxed);
-    } else {
-        import_state.phase.store(4, Ordering::Relaxed);
-    }
+    let result = match &import_result {
+        Ok(()) => {
+            eprintln!("[run_import_internal] setting phase to DONE (3)");
+            import_state.phase.store(3, Ordering::Relaxed);
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("[run_import_internal] setting phase to ERROR (4), error: {:?}", e);
+            import_state.phase.store(4, Ordering::Relaxed);
+            Err(anyhow::anyhow!("Import failed: {}", e))
+        }
+    };
 
+    eprintln!("[run_import_internal] === END ===");
     result
 }
 
@@ -280,12 +346,12 @@ async fn pick_file(app: AppHandle) -> Result<String, String> {
 }
 
 #[tauri::command]
-async fn import_file(app: AppHandle, file_path: String, import_state: tauri::State<'_, Arc<ImportState>>) -> Result<(), String> {
+async fn import_file(app: AppHandle, file_path: String, import_state: tauri::State<'_, Arc<ImportState>>, store_tx: tauri::State<'_, StoreTx>) -> Result<(), String> {
     let path = PathBuf::from(&file_path);
     if !path.exists() {
         return Err(format!("File not found: {file_path}"));
     }
-    run_import_internal(app, path, import_state.inner().clone()).map_err(|e| e.to_string())
+    run_import_internal(app, path, import_state.inner().clone(), store_tx.0.clone()).map_err(|e| e.to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -308,17 +374,20 @@ pub fn run() {
 
     let store_tx = start_store_thread(dir);
 
+    let store_tx_for_manage = store_tx.clone();
+    let store_tx_for_protocol = store_tx;
     let protocol_import_state = import_state.clone();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(import_state)
         .manage(ContentWebview(std::sync::Arc::new(Mutex::new(None))))
+        .manage(StoreTx(store_tx_for_manage))
         .register_asynchronous_uri_scheme_protocol("sneaker", move |ctx, req, responder| {
             let import_state = protocol_import_state.clone();
             let app_handle = ctx.app_handle().clone();
 
-            let tx = store_tx.clone();
+            let tx = store_tx_for_protocol.clone();
             std::thread::spawn(move || {
                 let original_path = req.uri().path().to_string();
                 let host_buf = req.uri().host().unwrap_or("home").to_string();
@@ -408,6 +477,11 @@ pub fn run() {
                     let total_bytes = import_state.total_bytes.load(Ordering::Relaxed);
                     let processed_entries = import_state.processed_entries.load(Ordering::Relaxed);
 
+                    eprintln!(
+                        "[progress_api] serving: is_importing={}, phase={}, processed_bytes={}, total_bytes={}, processed_entries={}",
+                        is_importing, phase, processed_bytes, total_bytes, processed_entries
+                    );
+
                     let json = format!(
                         r#"{{"is_importing":{},"phase":"{}","processed_bytes":{},"total_bytes":{},"processed_entries":{}}}"#,
                         is_importing, phase, processed_bytes, total_bytes, processed_entries
@@ -422,20 +496,24 @@ pub fn run() {
                 }
 
                 // 4. Serving content from local store (background thread owns the store)
+                eprintln!("[protocol] section4: host='{}', path='{}', host.len={}", host, path, host.len());
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     if host == "home" || host == "localhost" || host.is_empty() {
                         // 4a. Serve frontpage
+                        eprintln!("[protocol] -> frontpage order='{}'", path);
                         let (resp_tx, resp_rx) = std::sync::mpsc::channel();
                         if tx.send(StoreMsg::Frontpage {
                             order: path.to_string(),
                             resp: resp_tx,
                         }).is_err() {
+                            eprintln!("[protocol] -> store thread died (send failed)");
                             return tauri::http::Response::builder()
                                 .status(500)
                                 .body(b"Store thread died".to_vec()).unwrap();
                         }
                         match resp_rx.recv().unwrap() {
                             Ok(html) => {
+                                eprintln!("[protocol] -> frontpage OK, {} bytes", html.len());
                                 let body = rewrite_urls(html.as_bytes(), "text/html; charset=utf-8");
                                 tauri::http::Response::builder()
                                     .status(200)
@@ -445,6 +523,7 @@ pub fn run() {
                                     .unwrap()
                             }
                             Err(e) => {
+                                eprintln!("[protocol] -> frontpage ERROR: {:?}", e);
                                 tauri::http::Response::builder()
                                     .status(500)
                                     .body(format!("Frontpage error: {e}").into_bytes())
@@ -453,18 +532,21 @@ pub fn run() {
                         }
                     } else if host.len() == 64 {
                         // 4b. Serve subspace content
+                        eprintln!("[protocol] -> get_entry host='{}' path='{}'", host, path);
                         let (resp_tx, resp_rx) = std::sync::mpsc::channel();
                         if tx.send(StoreMsg::GetEntry {
                             host: host.to_string(),
                             path: path.to_string(),
                             resp: resp_tx,
                         }).is_err() {
+                            eprintln!("[protocol] -> store thread died (send failed)");
                             return tauri::http::Response::builder()
                                 .status(500)
                                 .body(b"Store thread died".to_vec()).unwrap();
                         }
                         match resp_rx.recv().unwrap() {
                             Ok(Some((mime, bytes, etag))) => {
+                                eprintln!("[protocol] -> get_entry OK, {} bytes, mime={}", bytes.len(), mime);
                                 let body = rewrite_urls(&bytes, &mime);
                                 tauri::http::Response::builder()
                                     .status(200)
@@ -474,17 +556,20 @@ pub fn run() {
                                     .body(body).unwrap()
                             }
                             Ok(None) => {
+                                eprintln!("[protocol] -> get_entry NOT FOUND");
                                 tauri::http::Response::builder()
                                     .status(404)
                                     .body(b"Not found".to_vec()).unwrap()
                             }
                             Err(e) => {
+                                eprintln!("[protocol] -> get_entry ERROR: {:?}", e);
                                 tauri::http::Response::builder()
                                     .status(500)
                                     .body(format!("Content error: {e}").into_bytes()).unwrap()
                             }
                         }
                     } else {
+                        eprintln!("[protocol] -> INVALID HOST: '{}'", host);
                         tauri::http::Response::builder()
                             .status(400)
                             .body(format!("Invalid host: {host}").into_bytes()).unwrap()

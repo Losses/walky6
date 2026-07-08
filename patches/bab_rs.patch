@@ -1,0 +1,17 @@
+diff --git a/src/generic/storage/backend_filesystem.rs b/src/generic/storage/backend_filesystem.rs
+index 0000000..1111111
+--- a/src/generic/storage/backend_filesystem.rs
++++ b/src/generic/storage/backend_filesystem.rs
+@@ -121,7 +121,11 @@ impl FileBackend {
+         }
+ 
+         // And delete the file on disk in every case.
+-        async_fs::remove_file(key).await
++        match async_fs::remove_file(key).await {
++            Ok(()) => Ok(()),
++            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
++            Err(err) => Err(err),
++        }
+     }
+ 
+     async fn rename(

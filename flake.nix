@@ -30,6 +30,22 @@
               cp -r . $out/sneakerweb/
             '';
           };
+
+          babRsSrc = builtins.fetchGit {
+            url = "https://codeberg.org/worm-blossom/bab_rs";
+            ref = "main";
+            rev = "2dd7466083424eccdecc1c2f43a36fef7acc8a83";
+          };
+
+          vendorBabRs = pkgs.stdenv.mkDerivation {
+            name = "bab_rs-vendor";
+            src = babRsSrc;
+            patches = [ ./patches/bab_rs.patch ];
+            installPhase = ''
+              mkdir -p $out/bab_rs
+              cp -r . $out/bab_rs/
+            '';
+          };
         in
         {
           default = pkgs.rustPlatform.buildRustPackage {
@@ -69,6 +85,8 @@
               echo "Setting up vendored sneakerweb..."
               mkdir -p vendor
               cp -r ${vendorSneakerweb}/sneakerweb vendor/sneakerweb
+              echo "Setting up vendored bab_rs..."
+              cp -r ${vendorBabRs}/bab_rs vendor/bab_rs
             '';
             doCheck = false;
           };
