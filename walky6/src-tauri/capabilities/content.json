@@ -1,0 +1,9 @@
+{
+  "identifier": "content-capability",
+  "description": "Restricted capability for the content webview",
+  "windows": ["content"],
+  "permissions": [
+    "core:default",
+    "core:event:allow-emit"
+  ]
+}
