@@ -19,12 +19,10 @@ function App() {
 
   const navigateToInternal = useCallback(
     async (url: string) => {
-      console.log("[Toolbar App.tsx] navigateToInternal called with URL:", url);
       try {
         await invoke("navigate_content", { path: url });
-        console.log("[Toolbar App.tsx] navigate_content completed for URL:", url);
       } catch (e) {
-        console.error("[Toolbar App.tsx] navigate_content failed for URL:", url, "error:", e);
+        console.error("navigate_content failed:", e);
       }
     },
     [],
@@ -32,11 +30,7 @@ function App() {
 
   const navigateTo = useCallback(
     (urlOrPath: string) => {
-      console.log("[Toolbar App.tsx] navigateTo called with:", urlOrPath);
-      if (baseUrl === null) {
-        console.warn("[Toolbar App.tsx] baseUrl is null, skipping navigation");
-        return;
-      }
+      if (baseUrl === null) return;
       let url = urlOrPath;
       if (!url.startsWith("sneaker://")) {
         if (urlOrPath === "/" || urlOrPath === "") {
@@ -46,25 +40,21 @@ function App() {
           url = `${baseUrl}${cleanPath}`;
         }
       }
-      console.log("[Toolbar App.tsx] target URL after mapping:", url);
       navigateToInternal(url);
     },
     [baseUrl, navigateToInternal],
   );
 
   useEffect(() => {
-    console.log("[Toolbar App.tsx] Requesting base URL from Rust...");
     invoke<string>("get_base_url").then((url) => {
-      console.log("[Toolbar App.tsx] Base URL loaded:", url);
       setBaseUrl(url);
     }).catch(err => {
-      console.error("[Toolbar App.tsx] Failed to get base URL:", err);
+      console.error("Failed to get base URL:", err);
     });
   }, []);
 
   useEffect(() => {
     if (baseUrl !== null) {
-      console.log("[Toolbar App.tsx] baseUrl is set. Initializing navigation to sneaker://home/...");
       navigateTo("sneaker://home/");
     }
   }, [baseUrl, navigateTo]);
@@ -75,24 +65,18 @@ function App() {
       action: 'push' | 'replace' | 'pop' | 'load';
     }
 
-    console.log("[Toolbar App.tsx] Setting up webview-navigated listener...");
     const unlisten = listen<NavPayload>("webview-navigated", (event) => {
-      console.log("[Toolbar App.tsx] Received webview-navigated event:", event);
       const { url: newUrl, action } = event.payload;
-      console.log("[Toolbar App.tsx] Payload details - url:", newUrl, "action:", action);
 
       // Handle progress page
       if (newUrl.includes("/__progress__")) {
-        console.log("[Toolbar App.tsx] Navigating to progress page, setting 'Importing...'");
         setUrlInput("Importing...");
         return;
       }
 
       // Check where we are in history
       const currentUrl = historyStack.current[historyIndex.current];
-      console.log("[Toolbar App.tsx] History index:", historyIndex.current, "Current URL in history:", currentUrl);
       if (currentUrl === newUrl) {
-        console.log("[Toolbar App.tsx] URL matches current history page. Updating UI only.");
         setUrlInput(newUrl);
         updateNavButtons();
         return;
@@ -100,7 +84,6 @@ function App() {
 
       // Check if it's a replace navigation
       if (action === 'replace') {
-        console.log("[Toolbar App.tsx] Action is replace. Updating stack.");
         if (historyIndex.current >= 0) {
           historyStack.current[historyIndex.current] = newUrl;
         } else {
@@ -114,21 +97,16 @@ function App() {
 
       // Check if it's a popState navigation (back/forward history traversal)
       if (action === 'pop') {
-        console.log("[Toolbar App.tsx] Action is pop.");
         const index = historyStack.current.indexOf(newUrl);
         if (index !== -1) {
-          console.log("[Toolbar App.tsx] Found URL in stack at index:", index);
           historyIndex.current = index;
           setUrlInput(newUrl);
           updateNavButtons();
           return;
-        } else {
-          console.warn("[Toolbar App.tsx] Pop action URL not found in history stack:", newUrl);
         }
       }
 
       // Otherwise, new navigation (push or load)
-      console.log("[Toolbar App.tsx] Adding new URL to history stack:", newUrl);
       historyStack.current = historyStack.current.slice(0, historyIndex.current + 1);
       historyStack.current.push(newUrl);
       historyIndex.current = historyStack.current.length - 1;
@@ -137,7 +115,6 @@ function App() {
     });
 
     return () => {
-      console.log("[Toolbar App.tsx] Cleaning up webview-navigated listener");
       unlisten.then((f) => f());
     };
   }, [updateNavButtons]);

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter, Listener, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 const TOOLBAR_H: u32 = 90;
 
@@ -205,19 +205,10 @@ async fn webview_navigated(
     url: String,
     action: String,
 ) -> Result<(), String> {
-    println!("[Rust webview_navigated] Received event from webview. URL: {}, Action: {}", url, action);
-    match app.emit("webview-navigated", NavPayload { url: url.clone(), action: action.clone() }) {
-        Ok(_) => {
-            println!("[Rust webview_navigated] Successfully emitted webview-navigated event to all webviews");
-            Ok(())
-        }
-        Err(e) => {
-            let err_msg = format!("Failed to emit webview-navigated: {e}");
-            println!("[Rust webview_navigated] {err_msg}");
-            Err(err_msg)
-        }
-    }
+    app.emit("webview-navigated", NavPayload { url, action })
+        .map_err(|e| format!("Failed to emit webview-navigated: {e}"))
 }
+
 
 
 #[tauri::command]
@@ -529,13 +520,6 @@ pub fn run() {
 
             let home_url: url::Url = "sneaker://home/".parse().unwrap();
 
-            // Log when any webview-navigated event is emitted/received in Rust
-            {
-                app.listen("webview-navigated", move |event| {
-                    println!("[Rust setup listen] Received webview-navigated event in Rust: {:?}", event.payload());
-                });
-            }
-
             let scale_factor = window.scale_factor().unwrap_or(1.0);
             let win_size = window.inner_size().unwrap_or(tauri::PhysicalSize::new(1024, 768));
             let toolbar_h_physical = (TOOLBAR_H as f64 * scale_factor).round() as u32;
@@ -556,7 +540,6 @@ pub fn run() {
                 tauri::webview::WebviewBuilder::new("content", tauri::WebviewUrl::CustomProtocol(home_url.clone()))
                     .initialization_script(r#"
                         (function() {
-                            console.log("[Content JS] Init script starting. top-level:", window === window.top, "URL:", location.href);
                             if (window !== window.top) return;
                             function normalizeUrl(url) {
                                 if (url.indexOf("http://sneaker.localhost/") === 0) {
@@ -568,42 +551,20 @@ pub fn run() {
                                 return url;
                             }
                             function emit(url, action) {
-                                console.log("[Content JS] emit called. url:", url, "action:", action);
                                 url = normalizeUrl(url);
-                                console.log("[Content JS] normalized url:", url);
                                 try {
                                     if (window.__TAURI_INTERNALS__) {
-                                        console.log("[Content JS] window.__TAURI_INTERNALS__ is available");
                                         if (window.__TAURI_INTERNALS__.invoke) {
-                                            console.log("[Content JS] invoking webview_navigated command");
-                                            window.__TAURI_INTERNALS__.invoke("webview_navigated", { url: url, action: action })
-                                                .then(function() {
-                                                    console.log("[Content JS] webview_navigated command completed successfully");
-                                                })
-                                                .catch(function(err) {
-                                                    console.error("[Content JS] webview_navigated command failed:", err);
-                                                });
-                                        } else {
-                                            console.warn("[Content JS] window.__TAURI_INTERNALS__.invoke is undefined");
+                                            window.__TAURI_INTERNALS__.invoke("webview_navigated", { url: url, action: action }).catch(function() {});
                                         }
-                                        
                                         if (window.__TAURI_INTERNALS__.emit) {
-                                            console.log("[Content JS] calling window.__TAURI_INTERNALS__.emit");
                                             window.__TAURI_INTERNALS__.emit("webview-navigated", { url: url, action: action });
-                                        } else {
-                                            console.log("[Content JS] window.__TAURI_INTERNALS__.emit is undefined");
                                         }
-                                    } else {
-                                        console.warn("[Content JS] window.__TAURI_INTERNALS__ is undefined");
                                     }
-
                                     if (window.__TAURI__ && window.__TAURI__.event && window.__TAURI__.event.emit) {
-                                        console.log("[Content JS] calling window.__TAURI__.event.emit");
                                         window.__TAURI__.event.emit("webview-navigated", { url: url, action: action });
                                     }
-                                } catch(e) {
-                                    console.error("[Content JS] Exception in emit:", e);
-                                }
+                                } catch(e) {}
                             }
                             var _push = history.pushState;
                             history.pushState = function() { _push.apply(this, arguments); emit(location.href, "push"); };
@@ -619,20 +580,11 @@ pub fn run() {
                                 var a = e.target.closest("a");
                                 if (a && a.href && a.href.indexOf("sneaker://") === 0) {
                                     e.preventDefault();
-                                    console.log("[Content JS] Intercepted sneaker:// link click:", a.href);
                                     try {
                                         if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) {
-                                            console.log("[Content JS] invoking navigate_content for:", a.href);
-                                            window.__TAURI_INTERNALS__.invoke("navigate_content", { path: a.href })
-                                                .catch(function(err) {
-                                                    console.error("[Content JS] navigate_content failed:", err);
-                                                });
-                                        } else {
-                                            console.warn("[Content JS] cannot invoke navigate_content, internals or invoke missing");
+                                            window.__TAURI_INTERNALS__.invoke("navigate_content", { path: a.href }).catch(function() {});
                                         }
-                                    } catch(err) {
-                                        console.error("[Content JS] Exception in click intercept:", err);
-                                    }
+                                    } catch(err) {}
                                 }
                             });
                         })();
