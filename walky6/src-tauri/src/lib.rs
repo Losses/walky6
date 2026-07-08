@@ -243,12 +243,8 @@ async fn webview_navigated(
     url: String,
     action: String,
 ) -> Result<(), String> {
-    eprintln!("[webview_navigated] url={:?} action={:?}", url, action);
     app.emit("webview-navigated", NavPayload { url, action })
-        .map_err(|e| {
-            eprintln!("[webview_navigated] emit error: {}", e);
-            format!("Failed to emit webview-navigated: {e}")
-        })
+        .map_err(|e| format!("Failed to emit webview-navigated: {e}"))
 }
 
 
@@ -258,24 +254,14 @@ async fn navigate_content(
     content_wv: tauri::State<'_, ContentWebview>,
     path: String,
 ) -> Result<(), String> {
-    eprintln!("[navigate_content] received path: {:?}", path);
-
     let parsed = if path.starts_with("sneaker://") {
-        url::Url::parse(&path).map_err(|e| {
-            eprintln!("[navigate_content] URL parse error: {}", e);
-            format!("invalid URL: {e}")
-        })?
+        url::Url::parse(&path).map_err(|e| format!("invalid URL: {e}"))?
     } else {
         let base = "sneaker://home";
         let clean_path = if path.starts_with('/') { path } else { format!("/{path}") };
         let combined = format!("{base}{clean_path}");
-        eprintln!("[navigate_content] combined relative path: {:?}", combined);
-        url::Url::parse(&combined).map_err(|e| {
-            eprintln!("[navigate_content] URL parse error: {}", e);
-            format!("invalid URL: {e}")
-        })?
+        url::Url::parse(&combined).map_err(|e| format!("invalid URL: {e}"))?
     };
-    eprintln!("[navigate_content] parsed URL: {}", parsed);
 
     #[cfg(target_os = "windows")]
     let parsed = if parsed.scheme() == "sneaker" {
@@ -285,29 +271,15 @@ async fn navigate_content(
             None => parsed.path().to_string(),
         };
         let rewritten = url::Url::parse(&format!("http://sneaker.localhost/{}{}", host, path_and_query))
-            .map_err(|e| {
-                eprintln!("[navigate_content] Windows URL rewrite error: {}", e);
-                e.to_string()
-            })?;
-        eprintln!("[navigate_content] Windows rewritten URL: {}", rewritten);
+            .map_err(|e| e.to_string())?;
         rewritten
     } else {
         parsed
     };
 
-    let wv = content_wv.0.lock().map_err(|e| {
-        eprintln!("[navigate_content] lock error: {}", e);
-        e.to_string()
-    })?;
+    let wv = content_wv.0.lock().map_err(|e| e.to_string())?;
     if let Some(ref wv) = *wv {
-        eprintln!("[navigate_content] calling wv.navigate({})", parsed);
-        wv.navigate(parsed).map_err(|e| {
-            eprintln!("[navigate_content] wv.navigate error: {}", e);
-            e.to_string()
-        })?;
-        eprintln!("[navigate_content] wv.navigate succeeded");
-    } else {
-        eprintln!("[navigate_content] content webview is None (not yet created)");
+        wv.navigate(parsed).map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -394,8 +366,6 @@ pub fn run() {
                 let original_path = req.uri().path().to_string();
                 let host_buf = req.uri().host().unwrap_or("home").to_string();
                 let path_str = original_path.clone();
-
-                eprintln!("[protocol] request host={:?} path={:?} full_uri={}", host_buf, path_str, req.uri());
 
                 let is_asset = path_str.starts_with("/assets/")
                     || path_str.starts_with("/src/")
@@ -503,14 +473,12 @@ pub fn run() {
                             order: path.to_string(),
                             resp: resp_tx,
                         }).is_err() {
-                            eprintln!("[protocol] frontpage: store thread died");
                             return tauri::http::Response::builder()
                                 .status(500)
                                 .body(b"Store thread died".to_vec()).unwrap();
                         }
                         match resp_rx.recv().unwrap() {
                             Ok(html) => {
-                                eprintln!("[protocol] frontpage ok len={}", html.len());
                                 let body = rewrite_urls(html.as_bytes(), "text/html; charset=utf-8");
                                 tauri::http::Response::builder()
                                     .status(200)
@@ -520,7 +488,6 @@ pub fn run() {
                                     .unwrap()
                             }
                             Err(e) => {
-                                eprintln!("[protocol] frontpage error: {}", e);
                                 tauri::http::Response::builder()
                                     .status(500)
                                     .body(format!("Frontpage error: {e}").into_bytes())
@@ -548,22 +515,18 @@ pub fn run() {
                                 path: candidate.clone(),
                                 resp: resp_tx,
                             }).is_err() {
-                                eprintln!("[protocol] get_entry: store thread died");
                                 return tauri::http::Response::builder()
                                     .status(500)
                                     .body(b"Store thread died".to_vec()).unwrap();
                             }
                             match resp_rx.recv().unwrap() {
                                 Ok(Some((mime, bytes, etag))) => {
-                                    eprintln!("[protocol] content 200 (try {:?}): host={} path={} mime={} size={}", candidate, host, path, mime, bytes.len());
                                     found = Some((mime, bytes, etag));
                                     break;
                                 }
                                 Ok(None) => {
-                                    eprintln!("[protocol] content miss: host={} path={} try={:?}", host, path, candidate);
                                 }
                                 Err(e) => {
-                                    eprintln!("[protocol] content error: host={} path={} try={:?} error={}", host, path, candidate, e);
                                     return tauri::http::Response::builder()
                                         .status(500)
                                         .body(format!("Content error: {e}").into_bytes()).unwrap();
@@ -580,13 +543,11 @@ pub fn run() {
                                 .header("Access-Control-Allow-Origin", "*")
                                 .body(body).unwrap()
                         } else {
-                            eprintln!("[protocol] content 404 (all tries failed): host={} path={} tries={:?}", host, path, try_paths);
                             tauri::http::Response::builder()
                                 .status(404)
                                 .body(b"Not found".to_vec()).unwrap()
                         }
                     } else {
-                        eprintln!("[protocol] invalid host: host={} (len={})", host, host.len());
                         tauri::http::Response::builder()
                             .status(400)
                             .body(format!("Invalid host: {host}").into_bytes()).unwrap()
@@ -643,7 +604,7 @@ pub fn run() {
                     .initialization_script(r#"
                         (function() {
                             if (window !== window.top) return;
-                            console.log("[content-wv] init script loaded, location:", location.href);
+                            
                             function normalizeUrl(url) {
                                 if (url.indexOf("http://sneaker.localhost/") === 0) {
                                     var rest = url.substring("http://sneaker.localhost/".length);
@@ -655,7 +616,6 @@ pub fn run() {
                             }
                             function emit(url, action) {
                                 url = normalizeUrl(url);
-                                console.log("[content-wv] emit", action, url);
                                 try {
                                     if (window.__TAURI_INTERNALS__) {
                                         if (window.__TAURI_INTERNALS__.invoke) {
@@ -669,7 +629,7 @@ pub fn run() {
                                         window.__TAURI__.event.emit("webview-navigated", { url: url, action: action });
                                     }
                                 } catch(e) {
-                                    console.error("[content-wv] emit error:", e);
+                                    
                                 }
                             }
                             var _push = history.pushState;
@@ -729,8 +689,6 @@ pub fn run() {
                         }
                     });
 
-            eprintln!("[setup] creating content webview at ({}, {}), size {}x{}",
-                toolbar_h_physical, 0, win_size.width, content_h);
             let webview = window
                 .add_child(
                     builder,
@@ -738,7 +696,6 @@ pub fn run() {
                     tauri::PhysicalSize::new(win_size.width, content_h),
                 )
                 .expect("failed to add content webview");
-            eprintln!("[setup] content webview created successfully");
 
             #[cfg(not(target_os = "linux"))]
             let _ = webview.set_auto_resize(false);
@@ -746,7 +703,6 @@ pub fn run() {
             {
                 let state = app.state::<ContentWebview>();
                 *state.0.lock().unwrap() = Some(webview);
-                eprintln!("[setup] content webview stored in state");
             }
 
             #[cfg(target_os = "linux")]

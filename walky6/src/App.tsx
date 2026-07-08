@@ -19,10 +19,8 @@ function App() {
 
   const navigateToInternal = useCallback(
     async (url: string) => {
-      console.log("[frontend] navigateToInternal:", url);
       try {
         await invoke("navigate_content", { path: url });
-        console.log("[frontend] navigate_content invoke succeeded");
       } catch (e) {
         console.error("navigate_content failed:", e);
       }
@@ -148,9 +146,7 @@ function App() {
 
   const handleGo = useCallback(() => {
     let destination = urlInput.trim();
-    console.log("[frontend] handleGo called, urlInput:", urlInput, "baseUrl:", baseUrl);
     if (baseUrl === null) {
-      console.warn("[frontend] handleGo: baseUrl is null, skipping");
       return;
     }
 
@@ -164,7 +160,6 @@ function App() {
       }
     }
 
-    console.log("[frontend] handleGo navigating to:", destination);
     navigateToInternal(destination);
   }, [urlInput, baseUrl, navigateToInternal]);
 
