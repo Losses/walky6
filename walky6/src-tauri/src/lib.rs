@@ -376,6 +376,7 @@ mod webview2_handler {
         store_tx: std::sync::mpsc::Sender<StoreMsg>,
         _import_state: Arc<ImportState>,
     ) -> Result<(), String> {
+        let app_handle = webview.app_handle().clone();
         webview.with_webview(move |wv| {
             let controller = wv.controller();
             let core_webview = unsafe { controller.CoreWebView2() }.expect("failed to get CoreWebView2");
@@ -391,6 +392,7 @@ mod webview2_handler {
 
             let store_tx_clone = store_tx.clone();
             let env_clone = env.clone();
+            let app_handle_clone = app_handle.clone();
 
             let handler = WebResourceRequestedEventHandler::create(Box::new(move |_, args| {
                 let Some(args) = args else { return Ok(()); };
@@ -425,6 +427,32 @@ mod webview2_handler {
                 let is_subspace = subdomain.len() == 64 && subdomain.chars().all(|c| c.is_ascii_hexdigit());
                 let is_frontpage = subdomain.is_empty() || subdomain == "sneaker" || subdomain == "home";
                 let is_ipc = subdomain == "ipc";
+                let is_nav = subdomain == "__nav__";
+
+                if is_nav {
+                    let mut nav_url = String::new();
+                    let mut nav_action = String::from("push");
+                    if let Some(query) = parsed.query() {
+                        for (k, v) in url::form_urlencoded::parse(query.as_bytes()) {
+                            match k.as_ref() {
+                                "url" => nav_url = v.into_owned(),
+                                "action" => nav_action = v.into_owned(),
+                                _ => {}
+                            }
+                        }
+                    }
+                    let _ = app_handle_clone.emit("webview-navigated", NavPayload { url: nav_url, action: nav_action });
+                    let stream = unsafe { SHCreateMemStream(Some(&[])) };
+                    let status = HSTRING::from("OK");
+                    let headers = HSTRING::from("Access-Control-Allow-Origin: *\r\n");
+                    let response = unsafe {
+                        env_clone.CreateWebResourceResponse(stream.as_ref(), 200, PCWSTR::from_raw(status.as_ptr()), PCWSTR::from_raw(headers.as_ptr()))
+                    };
+                    if let Ok(resp) = response {
+                        let _ = unsafe { args.SetResponse(&resp) };
+                    }
+                    return Ok(());
+                }
 
                 if is_ipc {
                     return Ok(());
@@ -623,9 +651,32 @@ pub fn run() {
 
             let tx = store_tx_for_protocol.clone();
             std::thread::spawn(move || {
-                let original_path = req.uri().path().to_string();
                 let host_buf = req.uri().host().unwrap_or("home").to_string();
-                let path_str = original_path.clone();
+                let path_str = req.uri().path().to_string();
+
+                if host_buf == "__nav__" {
+                    let mut nav_url = String::new();
+                    let mut nav_action = String::from("push");
+                    if let Some(query) = req.uri().query() {
+                        for (k, v) in url::form_urlencoded::parse(query.as_bytes()) {
+                            match k.as_ref() {
+                                "url" => nav_url = v.into_owned(),
+                                "action" => nav_action = v.into_owned(),
+                                _ => {}
+                            }
+                        }
+                    }
+                    let _ = app_handle.emit("webview-navigated", NavPayload { url: nav_url, action: nav_action });
+                    let response = tauri::http::Response::builder()
+                        .status(200)
+                        .header("Access-Control-Allow-Origin", "*")
+                        .body(Vec::new())
+                        .unwrap();
+                    responder.respond(response);
+                    return;
+                }
+
+                let original_path = path_str.clone();
 
                 let is_vite_dev = path_str.starts_with("/@vite/")
                     || path_str.starts_with("/@id/")
@@ -958,21 +1009,13 @@ pub fn run() {
                             }
                             function emit(url, action) {
                                 url = normalizeUrl(url);
-                                try {
-                                    if (window.__TAURI_INTERNALS__) {
-                                        if (window.__TAURI_INTERNALS__.invoke) {
-                                            window.__TAURI_INTERNALS__.invoke("webview_navigated", { url: url, action: action }).catch(function() {});
-                                        }
-                                        if (window.__TAURI_INTERNALS__.emit) {
-                                            window.__TAURI_INTERNALS__.emit("webview-navigated", { url: url, action: action });
-                                        }
-                                    }
-                                    if (window.__TAURI__ && window.__TAURI__.event && window.__TAURI__.event.emit) {
-                                        window.__TAURI__.event.emit("webview-navigated", { url: url, action: action });
-                                    }
-                                } catch(e) {
-                                    
+                                var fetchUrl;
+                                if (location.protocol === "http:" || location.protocol === "https:") {
+                                    fetchUrl = "http://__nav__.localhost/?url=" + encodeURIComponent(url) + "&action=" + encodeURIComponent(action);
+                                } else {
+                                    fetchUrl = "sneaker://__nav__/?url=" + encodeURIComponent(url) + "&action=" + encodeURIComponent(action);
                                 }
+                                try { fetch(fetchUrl, { mode: "no-cors" }).catch(function(){}); } catch(e) {}
                             }
                             var _push = history.pushState;
                             history.pushState = function() { _push.apply(this, arguments); emit(location.href, "push"); };
