@@ -198,7 +198,6 @@ async fn navigate_content(
     content_wv: tauri::State<'_, ContentWebview>,
     path: String,
 ) -> Result<(), String> {
-    eprintln!("[walky6] navigate_content called with: {}", path);
     let parsed = if path.starts_with("sneaker://") {
         url::Url::parse(&path).map_err(|e| format!("invalid URL: {e}"))?
     } else {
@@ -220,17 +219,9 @@ async fn navigate_content(
         parsed
     };
 
-    eprintln!("[walky6] navigate_content parsed URL: {}", parsed);
     let wv = content_wv.0.lock().map_err(|e| e.to_string())?;
     if let Some(ref wv) = *wv {
-        eprintln!("[walky6] calling wv.navigate()");
-        wv.navigate(parsed).map_err(|e| {
-            eprintln!("[walky6] wv.navigate() failed: {}", e);
-            e.to_string()
-        })?;
-        eprintln!("[walky6] wv.navigate() succeeded");
-    } else {
-        eprintln!("[walky6] content webview not found in state");
+        wv.navigate(parsed).map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -251,6 +242,12 @@ async fn go_forward_content(content_wv: tauri::State<'_, ContentWebview>) -> Res
         wv.eval("window.history.forward()").map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+struct NavPayload {
+    url: String,
+    action: String,
 }
 
 #[tauri::command]
@@ -306,7 +303,6 @@ pub fn run() {
         .manage(import_state)
         .manage(ContentWebview(std::sync::Arc::new(Mutex::new(None))))
         .register_asynchronous_uri_scheme_protocol("sneaker", move |ctx, req, responder| {
-            eprintln!("[walky6] protocol handler: {} {}", req.method(), req.uri());
             let import_state = protocol_import_state.clone();
             let app_handle = ctx.app_handle().clone();
 
@@ -428,7 +424,6 @@ pub fn run() {
                         }
                         match resp_rx.recv().unwrap() {
                             Ok(html) => {
-                                eprintln!("[walky6] frontpage rendered: {} bytes", html.len());
                                 let body = rewrite_urls(html.as_bytes(), "text/html; charset=utf-8");
                                 tauri::http::Response::builder()
                                     .status(200)
@@ -438,7 +433,6 @@ pub fn run() {
                                     .unwrap()
                             }
                             Err(e) => {
-                                eprintln!("[walky6] frontpage error for {host}{path}: {e:?}");
                                 tauri::http::Response::builder()
                                     .status(500)
                                     .body(format!("Frontpage error: {e}").into_bytes())
@@ -459,7 +453,6 @@ pub fn run() {
                         }
                         match resp_rx.recv().unwrap() {
                             Ok(Some((mime, bytes, etag))) => {
-                                eprintln!("[walky6] subspace content: {} bytes, mime={}, etag={}", bytes.len(), mime, etag);
                                 let body = rewrite_urls(&bytes, &mime);
                                 tauri::http::Response::builder()
                                     .status(200)
@@ -469,13 +462,11 @@ pub fn run() {
                                     .body(body).unwrap()
                             }
                             Ok(None) => {
-                                eprintln!("[walky6] subspace content not found for {host}{path}");
                                 tauri::http::Response::builder()
                                     .status(404)
                                     .body(b"Not found".to_vec()).unwrap()
                             }
                             Err(e) => {
-                                eprintln!("[walky6] subspace content error for {host}{path}: {e:?}");
                                 tauri::http::Response::builder()
                                     .status(500)
                                     .body(format!("Content error: {e}").into_bytes()).unwrap()
@@ -488,10 +479,7 @@ pub fn run() {
                     }
                 }));
                 let response = match result {
-                    Ok(response) => {
-                        eprintln!("[walky6] responding with status {}", response.status());
-                        response
-                    }
+                    Ok(response) => response,
                     Err(panic) => {
                         let msg = if let Some(s) = panic.downcast_ref::<&str>() {
                             s.to_string()
@@ -500,7 +488,6 @@ pub fn run() {
                         } else {
                             "unknown panic".to_string()
                         };
-                        eprintln!("[walky6] PANIC in protocol handler: {msg}");
                         tauri::http::Response::builder()
                             .status(500)
                             .body(format!("PANIC: {msg}").into_bytes())
@@ -537,40 +524,12 @@ pub fn run() {
             #[cfg(not(target_os = "linux"))]
             let _ = _main_webview.set_auto_resize(false);
 
+            let nav_app_handle = app.app_handle().clone();
             let builder =
                 tauri::webview::WebviewBuilder::new("content", tauri::WebviewUrl::CustomProtocol(home_url.clone()))
                     .initialization_script(r#"
                         (function() {
                             if (window !== window.top) return;
-                            console.log("[walky6] init script running in top frame");
-                            function normalizeUrl(url) {
-                                if (url.indexOf("http://sneaker.localhost/") === 0) {
-                                    var rest = url.substring("http://sneaker.localhost/".length);
-                                    var slash = rest.indexOf("/");
-                                    if (slash === -1) return "sneaker://" + rest + "/";
-                                    return "sneaker://" + rest.substring(0, slash) + rest.substring(slash);
-                                }
-                                return url;
-                            }
-                            function emit(url, action) {
-                                url = normalizeUrl(url);
-                                console.log("[walky6] emit from JS:", action, url);
-                                try {
-                                    if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.emit)
-                                        window.__TAURI_INTERNALS__.emit("webview-navigated", { url: url, action: action });
-                                    else if (window.__TAURI__ && window.__TAURI__.event && window.__TAURI__.event.emit)
-                                        window.__TAURI__.event.emit("webview-navigated", { url: url, action: action });
-                                } catch(e) {
-                                    console.error("[walky6] emit failed:", e);
-                                }
-                            }
-                            var _push = history.pushState;
-                            history.pushState = function() { _push.apply(this, arguments); emit(location.href, "push"); };
-                            var _replace = history.replaceState;
-                            history.replaceState = function() { _replace.apply(this, arguments); emit(location.href, "replace"); };
-                            window.addEventListener("popstate", function() { emit(location.href, "pop"); });
-                            window.addEventListener("hashchange", function() { emit(location.href, "pop"); });
-                            window.addEventListener("load", function() { emit(location.href, "load"); });
                             document.addEventListener("click", function(e) {
                                 var a = e.target.closest("a");
                                 if (a && a.href && a.href.indexOf("sneaker://") === 0) {
@@ -590,7 +549,24 @@ pub fn run() {
                         })();
                     "#)
                     .on_navigation(move |url| {
-                        eprintln!("[walky6] on_navigation: {}", url);
+                        let url_str = url.to_string();
+                        #[cfg(target_os = "windows")]
+                        let url_str = {
+                            if url_str.starts_with("http://sneaker.localhost/") {
+                                let rest = &url_str["http://sneaker.localhost/".len()..];
+                                if let Some((first, remainder)) = rest.split_once('/') {
+                                    format!("sneaker://{}/{}", first, remainder)
+                                } else {
+                                    format!("sneaker://{}/", rest)
+                                }
+                            } else {
+                                url_str
+                            }
+                        };
+                        let _ = nav_app_handle.emit("webview-navigated", NavPayload {
+                            url: url_str,
+                            action: "load".to_string(),
+                        });
                         true
                     })
                     .on_new_window({

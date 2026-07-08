@@ -180,7 +180,7 @@ diff -ruN '--exclude=.git' '--exclude=Cargo.lock' '--exclude=.gitignore' /tmp/sn
                      }
 diff -ruN '--exclude=.git' '--exclude=Cargo.lock' '--exclude=.gitignore' /tmp/snk-vendor/src/serve.rs vendor/sneakerweb/src/serve.rs
 --- /tmp/snk-vendor/src/serve.rs	2026-07-07 17:00:48.170981550 -0400
-+++ vendor/sneakerweb/src/serve.rs	2026-07-07 17:26:22.819707682 -0400
++++ vendor/sneakerweb/src/serve.rs	2026-07-07 20:22:44.852670315 -0400
 @@ -37,12 +37,12 @@
  use crate::util::yay;
  use crate::util::{SNEAKERWEB_NAMESPACE_ID_BYTES, get_domain};
@@ -378,7 +378,7 @@ diff -ruN '--exclude=.git' '--exclude=Cargo.lock' '--exclude=.gitignore' /tmp/sn
      store: &mut PersistentStore,
      order: FrontPageOrder,
      buffer: &mut Buffer,
-@@ -528,3 +536,93 @@
+@@ -528,3 +536,98 @@
  
      Ok(())
  }
@@ -425,14 +425,19 @@ diff -ruN '--exclude=.git' '--exclude=Cargo.lock' '--exclude=.gitignore' /tmp/sn
 +    };
 +
 +    let namespace = NamespaceId::from_bytes(&SNEAKERWEB_NAMESPACE_ID_BYTES);
-+    let key = (subspace_id, path);
++    let key = (subspace_id, path.clone());
 +
 +    let entry = match store.get_entry(&namespace, &key, None).await? {
 +        Some(e) => e,
 +        None => return Ok(None),
 +    };
 +
-+    let mime = mime_guess2::from_path(entry_path).first_or_octet_stream().to_string();
++    // Use the actual path we looked up (which may have been converted from "/" to "/index.html")
++    let mime = if entry_path == "/" || entry_path.is_empty() {
++        "text/html".to_string()
++    } else {
++        mime_guess2::from_path(&path.to_string()).first_or_octet_stream().to_string()
++    };
 +    let etag = base16::encode_lower(entry.payload_digest().as_bytes());
 +
 +    let buf = Vec::new();
