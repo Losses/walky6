@@ -477,11 +477,6 @@ pub fn run() {
                     let total_bytes = import_state.total_bytes.load(Ordering::Relaxed);
                     let processed_entries = import_state.processed_entries.load(Ordering::Relaxed);
 
-                    eprintln!(
-                        "[progress_api] serving: is_importing={}, phase={}, processed_bytes={}, total_bytes={}, processed_entries={}",
-                        is_importing, phase, processed_bytes, total_bytes, processed_entries
-                    );
-
                     let json = format!(
                         r#"{{"is_importing":{},"phase":"{}","processed_bytes":{},"total_bytes":{},"processed_entries":{}}}"#,
                         is_importing, phase, processed_bytes, total_bytes, processed_entries
@@ -496,24 +491,20 @@ pub fn run() {
                 }
 
                 // 4. Serving content from local store (background thread owns the store)
-                eprintln!("[protocol] section4: host='{}', path='{}', host.len={}", host, path, host.len());
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     if host == "home" || host == "localhost" || host.is_empty() {
                         // 4a. Serve frontpage
-                        eprintln!("[protocol] -> frontpage order='{}'", path);
                         let (resp_tx, resp_rx) = std::sync::mpsc::channel();
                         if tx.send(StoreMsg::Frontpage {
                             order: path.to_string(),
                             resp: resp_tx,
                         }).is_err() {
-                            eprintln!("[protocol] -> store thread died (send failed)");
                             return tauri::http::Response::builder()
                                 .status(500)
                                 .body(b"Store thread died".to_vec()).unwrap();
                         }
                         match resp_rx.recv().unwrap() {
                             Ok(html) => {
-                                eprintln!("[protocol] -> frontpage OK, {} bytes", html.len());
                                 let body = rewrite_urls(html.as_bytes(), "text/html; charset=utf-8");
                                 tauri::http::Response::builder()
                                     .status(200)
@@ -523,7 +514,6 @@ pub fn run() {
                                     .unwrap()
                             }
                             Err(e) => {
-                                eprintln!("[protocol] -> frontpage ERROR: {:?}", e);
                                 tauri::http::Response::builder()
                                     .status(500)
                                     .body(format!("Frontpage error: {e}").into_bytes())
@@ -532,21 +522,18 @@ pub fn run() {
                         }
                     } else if host.len() == 64 {
                         // 4b. Serve subspace content
-                        eprintln!("[protocol] -> get_entry host='{}' path='{}'", host, path);
                         let (resp_tx, resp_rx) = std::sync::mpsc::channel();
                         if tx.send(StoreMsg::GetEntry {
                             host: host.to_string(),
                             path: path.to_string(),
                             resp: resp_tx,
                         }).is_err() {
-                            eprintln!("[protocol] -> store thread died (send failed)");
                             return tauri::http::Response::builder()
                                 .status(500)
                                 .body(b"Store thread died".to_vec()).unwrap();
                         }
                         match resp_rx.recv().unwrap() {
                             Ok(Some((mime, bytes, etag))) => {
-                                eprintln!("[protocol] -> get_entry OK, {} bytes, mime={}", bytes.len(), mime);
                                 let body = rewrite_urls(&bytes, &mime);
                                 tauri::http::Response::builder()
                                     .status(200)
@@ -556,20 +543,17 @@ pub fn run() {
                                     .body(body).unwrap()
                             }
                             Ok(None) => {
-                                eprintln!("[protocol] -> get_entry NOT FOUND");
                                 tauri::http::Response::builder()
                                     .status(404)
                                     .body(b"Not found".to_vec()).unwrap()
                             }
                             Err(e) => {
-                                eprintln!("[protocol] -> get_entry ERROR: {:?}", e);
                                 tauri::http::Response::builder()
                                     .status(500)
                                     .body(format!("Content error: {e}").into_bytes()).unwrap()
                             }
                         }
                     } else {
-                        eprintln!("[protocol] -> INVALID HOST: '{}'", host);
                         tauri::http::Response::builder()
                             .status(400)
                             .body(format!("Invalid host: {host}").into_bytes()).unwrap()

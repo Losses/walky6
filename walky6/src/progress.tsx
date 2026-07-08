@@ -9,28 +9,17 @@ function ProgressView() {
   const [message, setMessage] = useState("Preparing import...");
 
   useEffect(() => {
-    let pollCount = 0;
     const poll = async () => {
-      pollCount++;
       try {
         const res = await fetch("/__progress_api__");
         const data = await res.json();
-
-        console.log(
-          `[progress] poll #${pollCount}: is_importing=${data.is_importing}, ` +
-          `phase=${data.phase}, processed_bytes=${data.processed_bytes}, ` +
-          `total_bytes=${data.total_bytes}, processed_entries=${data.processed_entries}`
-        );
 
         if (data.total_bytes > 0) {
           const pct = Math.min(
             100,
             Math.floor((data.processed_bytes / data.total_bytes) * 100),
           );
-          console.log(`[progress] setting percent=${pct} (${data.processed_bytes}/${data.total_bytes})`);
           setPercent(pct);
-        } else {
-          console.log(`[progress] total_bytes is 0, not updating percent`);
         }
 
         if (data.phase === "decoding") {
@@ -44,17 +33,14 @@ function ProgressView() {
           setMessage(`Import failed: ${data.message || "unknown error"}`);
         }
       } catch (err) {
-        console.error("[progress] Failed to poll progress:", err);
+        console.error("Failed to poll progress:", err);
       }
     };
 
     const interval = setInterval(poll, 200);
     poll();
 
-    return () => {
-      console.log("[progress] cleaning up interval");
-      clearInterval(interval);
-    };
+    return () => clearInterval(interval);
   }, [percent]);
 
   return (
