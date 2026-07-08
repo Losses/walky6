@@ -1,5 +1,5 @@
 diff --git a/src/import.rs b/src/import.rs
-index 516aa52..36d4d42 100644
+index 516aa52..6bd6001 100644
 --- a/src/import.rs
 +++ b/src/import.rs
 @@ -4,7 +4,13 @@ use smol::{
@@ -17,7 +17,7 @@ index 516aa52..36d4d42 100644
  use ufotofu::{
      ExpectedFinalError, ProduceAtLeastError,
      codec::{Blame, DecodeError},
-@@ -25,43 +31,95 @@ use crate::util::{SNEAKERWEB_NAMESPACE_ID_BYTES, domain_style, get_domain, hmm,
+@@ -25,31 +31,70 @@ use crate::util::{SNEAKERWEB_NAMESPACE_ID_BYTES, domain_style, get_domain, hmm,
  
  #[derive(Args)]
  pub struct ImportArgs {
@@ -73,63 +73,31 @@ index 516aa52..36d4d42 100644
 +    progress: &ProgressHandle,
 +    store: &mut PersistentStore,
 +) -> Result<()> {
-+    let start = Instant::now();
-+    eprintln!("[import_sneak] === START import_sneak ===");
-+    eprintln!("[import_sneak] file path: {:?}", args.src);
-+    eprintln!("[import_sneak] mode: {:?}", args.mode);
++    let _start = Instant::now();
 +
      let file = File::open(&args.src).await?;
 +    let file_size = file.metadata().await.map(|m| m.len()).unwrap_or(0);
-+    eprintln!("[import_sneak] file opened, size: {} bytes", file_size);
 +
 +    progress.total_bytes.store(file_size, Ordering::Relaxed);
 +    progress.phase.store(PHASE_DECODING, Ordering::Relaxed);
-+    eprintln!("[import_sneak] phase set to PHASE_DECODING (1)");
 +
      let drop_producer = reader_to_bulk_producer(file, new_unbounded_elastic());
-+    eprintln!("[import_sneak] drop_producer created");
 +
      let sneakerweb_fs_path = sneakerweb_dir().await?;
 -    let namespace_id = NamespaceId::from_bytes(&SNEAKERWEB_NAMESPACE_ID_BYTES);
-+    eprintln!("[import_sneak] sneakerweb dir: {:?}", sneakerweb_fs_path);
  
 -    let mut store = PersistentStore::new(&sneakerweb_fs_path).await?;
 +    let namespace_id = NamespaceId::from_bytes(&SNEAKERWEB_NAMESPACE_ID_BYTES);
-+    eprintln!("[import_sneak] namespace_id set");
  
      let allowed = match args.mode.clone().unwrap_or_default() {
 -        ImportMode::All => None,
 +        ImportMode::All => {
-+            eprintln!("[import_sneak] ImportMode::All (no filtering)");
 +            None
 +        }
          ImportMode::Familiar => {
-+            eprintln!("[import_sneak] ImportMode::Familiar, loading known subspaces...");
              let mut allowed = BTreeSet::new();
              store
-                 .subspaces(&namespace_id, &mut (&mut allowed).into_consumer())
-                 .await?;
-+            eprintln!("[import_sneak] known subspaces count: {}", allowed.len());
-             Some(allowed)
-         }
-     };
- 
-     let mut decoder = DropDecoder::new(drop_producer);
-+    eprintln!("[import_sneak] DropDecoder created");
- 
-     let blocklist_path = sneakerweb_fs_path.join("blocked");
-+    eprintln!("[import_sneak] blocklist path: {:?}, exists: {}", blocklist_path, blocklist_path.exists());
- 
-     let mut blocked = BTreeSet::new();
- 
-@@ -82,10 +140,16 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
-             blocked.insert(domain_id);
-             line.clear();
-         }
-+        eprintln!("[import_sneak] blocklist loaded, {} blocked domains", blocked.len());
-+    } else {
-+        eprintln!("[import_sneak] no blocklist found, no domains blocked");
-     }
+@@ -86,6 +131,9 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
  
      let mut skipped = BTreeSet::new();
  
@@ -139,7 +107,7 @@ index 516aa52..36d4d42 100644
      let mut filtering_decoder =
          ClosureProducer::<_, (DropSliceMetadata, SliceStreamProducer<_>), (), Error>::new(
              async || {
-@@ -96,14 +160,21 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
+@@ -96,14 +144,21 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
                          return Ok(Right(()));
                      };
  
@@ -162,7 +130,7 @@ index 516aa52..36d4d42 100644
                                      return Ok(Left((metadata, slice_stream)));
                                  }
                                  skip_reason = "unfamiliar";
-@@ -121,9 +192,10 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
+@@ -121,9 +176,10 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
  
                      skipped.insert(domain_id.clone());
  
@@ -174,7 +142,7 @@ index 516aa52..36d4d42 100644
                                  "an entry in the .snk file was too large for this device",
                              )?,
                          )
-@@ -132,6 +204,8 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
+@@ -132,6 +188,8 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
                              Ok(()) => anyhow!("unexpected end of .snk file"),
                              Err(err) => map_decode_err(err),
                          })?;
@@ -183,14 +151,12 @@ index 516aa52..36d4d42 100644
                      slice_stream
                          .produce_final()
                          .await
-@@ -145,32 +219,50 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
+@@ -145,32 +203,42 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
              },
          );
  
 -    import_drop(&mut store, &mut filtering_decoder, true)
-+    eprintln!("[import_sneak] filtering_decoder created, setting phase to PHASE_IMPORTING (2)...");
 +    progress.phase.store(PHASE_IMPORTING, Ordering::Relaxed);
-+    eprintln!("[import_sneak] phase set to PHASE_IMPORTING, calling import_drop... (decoding took {:?})", start.elapsed());
 +
 +    import_drop(store, &mut filtering_decoder, true)
          .await
@@ -213,7 +179,6 @@ index 516aa52..36d4d42 100644
 -            ImportDropError::PartialPayloadSliceEncountered => {
 -                unreachable!("we are not treating incompatible slices as fatal errors")
 +        .map_err(|err| {
-+            eprintln!("[import_sneak] import_drop ERROR: {:?}", err);
 +            match err {
 +                ImportDropError::SliceStreamBytesMismatch => {
 +                    anyhow!("an entry in the .snk file had incorrect metadata")
@@ -236,20 +201,15 @@ index 516aa52..36d4d42 100644
              }
          })?;
  
-+    eprintln!("[import_sneak] import_drop completed OK, flushing store... (total elapsed: {:?})", start.elapsed());
-+
      match store.flush().await {
 -        Ok(_) => Ok(()),
 -        Err(_) => bail!("failed to flush changes to the sneakerweb store"),
 +        Ok(_) => {
-+            eprintln!("[import_sneak] store flushed, setting phase to PHASE_DONE");
 +            progress.phase.store(PHASE_DONE, Ordering::Relaxed);
 +            progress.processed_bytes.store(file_size, Ordering::Relaxed);
-+            eprintln!("[import_sneak] === DONE (took {:?}) ===", start.elapsed());
 +            Ok(())
 +        }
 +        Err(_) => {
-+            eprintln!("[import_sneak] store flush FAILED");
 +            bail!("failed to flush changes to the sneakerweb store")
 +        }
      }

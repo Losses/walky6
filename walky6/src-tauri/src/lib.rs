@@ -160,18 +160,13 @@ fn progress_to_event(handle: &sneakerweb::import::ProgressHandle) -> ImportProgr
 }
 
 fn run_import_internal(app: AppHandle, file_path: PathBuf, import_state: Arc<ImportState>, store_tx: std::sync::mpsc::Sender<StoreMsg>) -> anyhow::Result<()> {
-    eprintln!("[run_import_internal] === START ===");
-    eprintln!("[run_import_internal] file_path: {:?}", file_path);
-
     import_state.is_importing.store(true, Ordering::Relaxed);
     import_state.phase.store(1, Ordering::Relaxed);
     import_state.processed_bytes.store(0, Ordering::Relaxed);
     import_state.processed_entries.store(0, Ordering::Relaxed);
-    eprintln!("[run_import_internal] import_state initialized (phase=1/decoding)");
 
     let handle = sneakerweb::import::ProgressHandle::new();
     import_state.total_bytes.store(0, Ordering::Relaxed);
-    eprintln!("[run_import_internal] ProgressHandle created");
 
     let poller_handle = handle.clone();
     let signal_handle = handle.clone();
@@ -179,36 +174,26 @@ fn run_import_internal(app: AppHandle, file_path: PathBuf, import_state: Arc<Imp
     let state_clone = import_state.clone();
 
     let poller = std::thread::spawn(move || {
-        eprintln!("[poller] thread started");
         loop {
             let progress = progress_to_event(&poller_handle);
-            eprintln!(
-                "[poller] poll: phase={}, processed={}, total={}, entries={}, msg={}",
-                progress.phase, progress.processed, progress.total, progress.processed_entries, progress.message
-            );
 
             if progress.total > 0 {
                 state_clone.total_bytes.store(progress.total, Ordering::Relaxed);
-                eprintln!("[poller] updated total_bytes -> {}", progress.total);
             }
             state_clone.phase.store(poller_handle.phase.load(Ordering::Relaxed), Ordering::Relaxed);
             state_clone.processed_bytes.store(progress.processed, Ordering::Relaxed);
             state_clone.processed_entries.store(progress.processed_entries, Ordering::Relaxed);
 
             let is_done = progress.phase == "done";
-            let emit_result = app_clone.emit("import-progress", progress.clone());
-            eprintln!("[poller] emit result: {:?}, is_done: {}", emit_result, is_done);
+            let _ = app_clone.emit("import-progress", progress.clone());
             if is_done {
-                eprintln!("[poller] phase is done, breaking out of poll loop");
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
-        eprintln!("[poller] thread exiting");
     });
 
     let (resp_tx, resp_rx) = std::sync::mpsc::channel::<anyhow::Result<()>>();
-    eprintln!("[run_import_internal] sending Import to store thread...");
     store_tx
         .send(StoreMsg::Import {
             file_path,
@@ -217,34 +202,27 @@ fn run_import_internal(app: AppHandle, file_path: PathBuf, import_state: Arc<Imp
         })
         .map_err(|_| anyhow::anyhow!("store thread died"))?;
 
-    eprintln!("[run_import_internal] waiting for import result from store thread...");
     let import_result = resp_rx
         .recv()
         .map_err(|_| anyhow::anyhow!("store thread channel closed"))?;
     // import_result is anyhow::Result<()> from import_sneak_into_store
 
     // Signal poller to stop (in case import errored without setting PHASE_DONE)
-    eprintln!("[run_import_internal] signaling poller to stop via signal_handle");
     signal_handle.phase.store(sneakerweb::import::PHASE_DONE, Ordering::Relaxed);
 
-    eprintln!("[run_import_internal] waiting for poller to join...");
     let _ = poller.join();
-    eprintln!("[run_import_internal] poller joined");
 
     let result = match &import_result {
         Ok(()) => {
-            eprintln!("[run_import_internal] setting phase to DONE (3)");
             import_state.phase.store(3, Ordering::Relaxed);
             Ok(())
         }
         Err(e) => {
-            eprintln!("[run_import_internal] setting phase to ERROR (4), error: {:?}", e);
             import_state.phase.store(4, Ordering::Relaxed);
             Err(anyhow::anyhow!("Import failed: {}", e))
         }
     };
 
-    eprintln!("[run_import_internal] === END ===");
     result
 }
 
