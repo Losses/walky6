@@ -158,12 +158,13 @@ function App() {
       }
     }
 
-    navigateTo(destination);
-  }, [urlInput, baseUrl, navigateTo]);
+    navigateToInternal(destination);
+  }, [urlInput, baseUrl, navigateToInternal]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
-      if (e.key === "Enter") {
+      if (e.key === "Enter" || e.key === "Go") {
+        e.preventDefault();
         handleGo();
       }
     },
