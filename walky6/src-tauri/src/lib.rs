@@ -91,6 +91,38 @@ fn ensure_sneakerweb_dir() -> PathBuf {
     PathBuf::from(".sneakerweb_store")
 }
 
+#[cfg(target_os = "windows")]
+fn extract_hash_from_referer(referer: &str) -> Option<String> {
+    eprintln!("[extract_hash] checking referer: {}", referer);
+    static RE: std::sync::OnceLock<regex_lite::Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| {
+        regex_lite::Regex::new(r#"^https?://sneaker\.localhost(?:[:/]|$)"#).expect("failed to compile referer regex")
+    });
+    if !re.is_match(referer) {
+        eprintln!("[extract_hash] referer does not match sneaker.localhost pattern");
+        return None;
+    }
+    let after_host = if referer.starts_with("http://") {
+        &referer["http://sneaker.localhost".len()..]
+    } else if referer.starts_with("https://") {
+        &referer["https://sneaker.localhost".len()..]
+    } else {
+        eprintln!("[extract_hash] referer does not start with http:// or https://");
+        return None;
+    };
+    eprintln!("[extract_hash] after_host: {}", after_host);
+    let path_part = after_host.trim_start_matches(':').trim_start_matches('/');
+    let first_segment = path_part.split('/').next().unwrap_or("");
+    eprintln!("[extract_hash] first_segment: {} (len={})", first_segment, first_segment.len());
+    if first_segment.len() == 64 && first_segment.chars().all(|c| c.is_ascii_hexdigit()) {
+        eprintln!("[extract_hash] extracted hash: {}", first_segment);
+        Some(first_segment.to_string())
+    } else {
+        eprintln!("[extract_hash] first_segment is not a valid hash");
+        None
+    }
+}
+
 fn rewrite_urls(body: &[u8], content_type: &str) -> Vec<u8> {
     let is_rewritable = content_type.contains("text/html")
         || content_type.contains("text/css")
@@ -111,12 +143,12 @@ fn rewrite_urls(body: &[u8], content_type: &str) -> Vec<u8> {
         let path = caps.get(2).map_or("", |m| m.as_str());
         if subdomain == "sneakerweb" {
             #[cfg(target_os = "windows")]
-            { format!("http://sneaker.localhost/home{path}") }
+            { format!("http://home.localhost{path}") }
             #[cfg(not(target_os = "windows"))]
             { format!("sneaker://home{path}") }
         } else {
             #[cfg(target_os = "windows")]
-            { format!("http://sneaker.localhost/{subdomain}{path}") }
+            { format!("http://{subdomain}.localhost{path}") }
             #[cfg(not(target_os = "windows"))]
             { format!("sneaker://{subdomain}{path}") }
         }
@@ -270,7 +302,7 @@ async fn navigate_content(
             Some(q) => format!("{}?{}", parsed.path(), q),
             None => parsed.path().to_string(),
         };
-        let rewritten = url::Url::parse(&format!("http://sneaker.localhost/{}{}", host, path_and_query))
+        let rewritten = url::Url::parse(&format!("http://{}.localhost{}", host, path_and_query))
             .map_err(|e| e.to_string())?;
         rewritten
     } else {
@@ -328,6 +360,234 @@ async fn import_file(app: AppHandle, file_path: String, import_state: tauri::Sta
     run_import_internal(app, path, import_state.inner().clone(), store_tx.0.clone()).map_err(|e| e.to_string())
 }
 
+#[cfg(target_os = "windows")]
+mod webview2_handler {
+    use super::*;
+    use webview2_com::Microsoft::Web::WebView2::Win32::*;
+    use webview2_com::WebResourceRequestedEventHandler;
+    use windows::core::{HSTRING, PCWSTR};
+    use windows::Win32::System::Com::IStream;
+    use windows::Win32::UI::Shell::SHCreateMemStream;
+    use std::fmt::Write;
+
+    type EventRegistrationToken = i64;
+
+    pub fn register_wildcard_localhost_handler(
+        webview: &tauri::Webview,
+        store_tx: std::sync::mpsc::Sender<StoreMsg>,
+        import_state: Arc<ImportState>,
+    ) -> Result<(), String> {
+        webview.with_webview(move |wv| {
+            let controller = wv.controller();
+            let core_webview = unsafe { controller.CoreWebView2() }.expect("failed to get CoreWebView2");
+            let env = wv.environment();
+
+            let filter = HSTRING::from("http://*.localhost/*");
+            unsafe {
+                core_webview.AddWebResourceRequestedFilter(
+                    &filter,
+                    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+                ).expect("failed to add filter");
+            }
+
+            let store_tx_clone = store_tx.clone();
+            let import_state_clone = import_state.clone();
+            let env_clone = env.clone();
+
+            let handler = WebResourceRequestedEventHandler::create(Box::new(move |_, args| {
+                let Some(args) = args else { return Ok(()); };
+
+                let request = unsafe { args.Request() }.expect("failed to get request");
+                let mut uri_pwstr = windows::core::PWSTR::null();
+                unsafe { request.Uri(&mut uri_pwstr) }.expect("failed to get uri");
+                let uri = unsafe { windows::core::HSTRING::from_wide(uri_pwstr.as_wide()) };
+                let uri_str = uri.to_string();
+
+                eprintln!("[webview2-handler] request: {}", uri_str);
+
+                let parsed = match url::Url::parse(&uri_str) {
+                    Ok(u) => u,
+                    Err(_) => return Ok(()),
+                };
+
+                if parsed.scheme() != "http" {
+                    return Ok(());
+                }
+
+                let host = parsed.host_str().unwrap_or("");
+                if !host.ends_with(".localhost") {
+                    return Ok(());
+                }
+
+                let subdomain = &host[..host.len() - ".localhost".len()];
+                let path = parsed.path().to_string();
+
+                eprintln!("[webview2-handler] host={}, path={}", subdomain, path);
+
+                let is_subspace = subdomain.len() == 64 && subdomain.chars().all(|c| c.is_ascii_hexdigit());
+                let is_frontpage = subdomain.is_empty() || subdomain == "sneaker" || subdomain == "home";
+                let is_ipc = subdomain == "ipc";
+
+                if is_ipc {
+                    return Ok(());
+                }
+
+                if is_frontpage {
+                    let deferral = unsafe { args.GetDeferral() };
+                    let store_tx_inner = store_tx_clone.clone();
+                    let env_inner = env_clone.clone();
+                    let path_owned = path.to_string();
+
+                    let (resp_tx, resp_rx) = std::sync::mpsc::channel();
+                    if store_tx_inner.send(StoreMsg::Frontpage {
+                        order: path_owned,
+                        resp: resp_tx,
+                    }).is_err() {
+                        return Ok(());
+                    }
+
+                    match resp_rx.recv() {
+                        Ok(Ok(html)) => {
+                            let body = rewrite_urls(html.as_bytes(), "text/html; charset=utf-8");
+                            let stream = unsafe { SHCreateMemStream(Some(&body)) };
+                            let status = HSTRING::from("OK");
+                            let headers = HSTRING::from("Content-Type: text/html; charset=utf-8\r\nAccess-Control-Allow-Origin: *\r\n");
+
+                            let response = unsafe {
+                                env_inner.CreateWebResourceResponse(
+                                    stream.as_ref(),
+                                    200,
+                                    PCWSTR::from_raw(status.as_ptr()),
+                                    PCWSTR::from_raw(headers.as_ptr()),
+                                )
+                            };
+                            if let Ok(resp) = response {
+                                let _ = unsafe { args.SetResponse(&resp) };
+                            }
+                        }
+                        _ => {
+                            let stream = unsafe { SHCreateMemStream(Some(&[])) };
+                            let status = HSTRING::from("Internal Server Error");
+                            let headers = HSTRING::from("");
+                            let response = unsafe {
+                                env_inner.CreateWebResourceResponse(
+                                    stream.as_ref(),
+                                    500,
+                                    PCWSTR::from_raw(status.as_ptr()),
+                                    PCWSTR::from_raw(headers.as_ptr()),
+                                )
+                            };
+                            if let Ok(resp) = response {
+                                let _ = unsafe { args.SetResponse(&resp) };
+                            }
+                        }
+                    }
+
+                    if let Ok(def) = &deferral {
+                        let _ = unsafe { def.Complete() };
+                    }
+                    return Ok(());
+                }
+
+                if is_subspace {
+                    let deferral = unsafe { args.GetDeferral() };
+                    let store_tx_inner = store_tx_clone.clone();
+                    let env_inner = env_clone.clone();
+                    let subdomain_owned = subdomain.to_string();
+                    let path_owned = path.to_string();
+
+                    // Do the store lookup synchronously (we're already on a background thread)
+                    let try_paths: Vec<String> = if path_owned.ends_with('/') {
+                        vec![path_owned.clone(), format!("{}index.html", path_owned)]
+                    } else {
+                        vec![
+                            path_owned.clone(),
+                            format!("{}.html", path_owned),
+                            format!("{}/index.html", path_owned),
+                        ]
+                    };
+
+                    let mut found: Option<(String, Vec<u8>, String)> = None;
+
+                    for candidate in &try_paths {
+                        let (resp_tx, resp_rx) = std::sync::mpsc::channel();
+                        if store_tx_inner.send(StoreMsg::GetEntry {
+                            host: subdomain_owned.clone(),
+                            path: candidate.clone(),
+                            resp: resp_tx,
+                        }).is_err() {
+                            break;
+                        }
+                        match resp_rx.recv() {
+                            Ok(Ok(Some((mime, bytes, etag)))) => {
+                                found = Some((mime, bytes, etag));
+                                break;
+                            }
+                            Ok(Ok(None)) => {}
+                            Ok(Err(_)) | Err(_) => break,
+                        }
+                    }
+
+                    if let Some((mime, bytes, etag)) = found {
+                        let body = rewrite_urls(&bytes, &mime);
+                        let stream = unsafe { SHCreateMemStream(Some(&body)) };
+                        let status = HSTRING::from("OK");
+                        let mut headers_map = String::new();
+                        let _ = writeln!(headers_map, "Content-Type: {}", mime);
+                        let _ = writeln!(headers_map, "ETag: {}", etag);
+                        let _ = writeln!(headers_map, "Access-Control-Allow-Origin: *");
+                        let headers = HSTRING::from(headers_map);
+
+                        let response = unsafe {
+                            env_inner.CreateWebResourceResponse(
+                                stream.as_ref(),
+                                200,
+                                PCWSTR::from_raw(status.as_ptr()),
+                                PCWSTR::from_raw(headers.as_ptr()),
+                            )
+                        };
+
+                        if let Ok(resp) = response {
+                            let _ = unsafe { args.SetResponse(&resp) };
+                        }
+                    } else {
+                        let stream = unsafe { SHCreateMemStream(Some(&[])) };
+                        let status = HSTRING::from("Not Found");
+                        let headers = HSTRING::from("");
+
+                        let response = unsafe {
+                            env_inner.CreateWebResourceResponse(
+                                stream.as_ref(),
+                                404,
+                                PCWSTR::from_raw(status.as_ptr()),
+                                PCWSTR::from_raw(headers.as_ptr()),
+                            )
+                        };
+                        if let Ok(resp) = response {
+                            let _ = unsafe { args.SetResponse(&resp) };
+                        }
+                    }
+
+                    if let Ok(def) = &deferral {
+                        let _ = unsafe { def.Complete() };
+                    }
+                }
+
+                Ok(())
+            }));
+
+            let mut token: EventRegistrationToken = 0;
+            unsafe {
+                core_webview.add_WebResourceRequested(&handler, &mut token)
+            }.expect("failed to add handler");
+
+            eprintln!("[webview2-handler] registered wildcard http://*.localhost/* handler");
+        }).map_err(|e| e.to_string())?;
+
+        Ok(())
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "linux")]
@@ -351,6 +611,8 @@ pub fn run() {
     let store_tx_for_manage = store_tx.clone();
     let store_tx_for_protocol = store_tx;
     let protocol_import_state = import_state.clone();
+    let import_state_for_setup = import_state.clone();
+    let store_tx_for_setup = store_tx_for_manage.clone();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -367,30 +629,70 @@ pub fn run() {
                 let host_buf = req.uri().host().unwrap_or("home").to_string();
                 let path_str = original_path.clone();
 
-                let is_asset = path_str.starts_with("/assets/")
-                    || path_str.starts_with("/src/")
-                    || path_str.starts_with("/node_modules/")
-                    || path_str.starts_with("/@vite/")
+                let is_vite_dev = path_str.starts_with("/@vite/")
                     || path_str.starts_with("/@id/")
                     || path_str.starts_with("/@fs/")
+                    || path_str.starts_with("/src/")
+                    || path_str.starts_with("/node_modules/")
                     || path_str == "/@react-refresh";
+
+                let is_static_asset = {
+                    let lower = path_str.to_lowercase();
+                    lower.ends_with(".js") || lower.ends_with(".mjs")
+                        || lower.ends_with(".css") || lower.ends_with(".map")
+                        || lower.ends_with(".png") || lower.ends_with(".jpg")
+                        || lower.ends_with(".jpeg") || lower.ends_with(".webp")
+                        || lower.ends_with(".gif") || lower.ends_with(".svg")
+                        || lower.ends_with(".ico") || lower.ends_with(".avif")
+                        || lower.ends_with(".woff") || lower.ends_with(".woff2")
+                        || lower.ends_with(".ttf") || lower.ends_with(".otf")
+                        || lower.ends_with(".mp4") || lower.ends_with(".webm")
+                        || lower.ends_with(".mp3") || lower.ends_with(".ogg")
+                        || lower.ends_with(".json") || lower.ends_with(".xml")
+                };
+
+                let is_asset = is_vite_dev
+                    || is_static_asset
+                    || path_str.starts_with("/_app/")
+                    || path_str.starts_with("/assets/");
 
                 #[cfg(target_os = "windows")]
                 let (host_buf, path_str) = {
-                    if host_buf == "localhost" {
-                        if !is_asset && path_str != "/__progress__" && path_str != "/__progress_api__" {
-                            let key = path_str.trim_start_matches('/');
-                            if let Some((first_segment, rest)) = key.split_once('/') {
-                                (first_segment.to_string(), format!("/{}", rest))
+                    let mut host = host_buf.clone();
+                    let mut path = path_str.clone();
+
+                    eprintln!("[sneaker-protocol] initial: host={}, path={}, uri={}, is_asset={}", host, path, req.uri(), is_asset);
+
+                    let is_special_path = is_asset || path == "/__progress__" || path == "/__progress_api__";
+
+                    if host == "localhost" && !is_special_path {
+                        let key = path.trim_start_matches('/');
+                        let first_segment = key.split('/').next().unwrap_or("");
+                        let path_has_hash_prefix = first_segment.len() == 64 
+                            && first_segment.chars().all(|c| c.is_ascii_hexdigit());
+
+                        if path_has_hash_prefix {
+                            if let Some((hash_part, rest)) = key.split_once('/') {
+                                host = hash_part.to_string();
+                                path = format!("/{}", rest);
                             } else {
-                                (key.to_string(), "/".to_string())
+                                host = key.to_string();
+                                path = "/".to_string();
                             }
+                            eprintln!("[sneaker-protocol] extracted from path: host={}, path={}", host, path);
                         } else {
-                            (host_buf, path_str)
+                            let referer = req.headers().get("referer").and_then(|v| v.to_str().ok()).unwrap_or("");
+                            eprintln!("[sneaker-protocol] no hash in path, checking referer: {}", referer);
+                            if let Some(hash) = extract_hash_from_referer(referer) {
+                                host = hash;
+                                eprintln!("[sneaker-protocol] extracted from referer: host={}, path={}", host, path);
+                            } else {
+                                eprintln!("[sneaker-protocol] no hash in referer, keeping host={}", host);
+                            }
                         }
-                    } else {
-                        (host_buf, path_str)
                     }
+
+                    (host, path)
                 };
 
                 let host = &host_buf;
@@ -417,25 +719,7 @@ pub fn run() {
                     return;
                 }
 
-                // 2. Serving assets
-                if is_asset {
-                    let key = original_path.trim_start_matches('/');
-                    let response = match app_handle.asset_resolver().get(key.to_string()) {
-                        Some(asset) => tauri::http::Response::builder()
-                            .status(200)
-                            .header("Content-Type", asset.mime_type)
-                            .body(asset.bytes)
-                            .unwrap(),
-                        None => tauri::http::Response::builder()
-                            .status(404)
-                            .body(vec![])
-                            .unwrap(),
-                    };
-                    responder.respond(response);
-                    return;
-                }
-
-                // 3. Serving progress API
+                // 2. Serving progress API
                 if path == "/__progress_api__" {
                     let is_importing = import_state.is_importing.load(Ordering::Relaxed);
                     let phase_val = import_state.phase.load(Ordering::Relaxed);
@@ -464,10 +748,112 @@ pub fn run() {
                     return;
                 }
 
-                // 4. Serving content from local store (background thread owns the store)
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    if host == "home" || host == "localhost" || host.is_empty() {
-                        // 4a. Serve frontpage
+                // 3. Determine context and serve
+                let is_subspace = host.len() == 64;
+                let is_frontpage = host == "home" || host == "localhost" || host.is_empty();
+
+                eprintln!("[sneaker-protocol] routing: host={}, path={}, is_subspace={}, is_frontpage={}, is_asset={}", host, path, is_subspace, is_frontpage, is_asset);
+
+                // 3a. Subspace: everything goes through the store
+                if is_subspace {
+                    eprintln!("[sneaker-protocol] serving subspace: host={}, path={}", host, path);
+                    let host_clone = host.to_string();
+                    let path_clone = path.to_string();
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let try_paths: Vec<String> = if path_clone.ends_with('/') {
+                            vec![path_clone.clone(), format!("{}index.html", path_clone)]
+                        } else {
+                            vec![
+                                path_clone.clone(),
+                                format!("{}.html", path_clone),
+                                format!("{}/index.html", path_clone),
+                            ]
+                        };
+
+                        let mut found: Option<(String, Vec<u8>, String)> = None;
+
+                        for candidate in &try_paths {
+                            let (resp_tx, resp_rx) = std::sync::mpsc::channel();
+                            if tx.send(StoreMsg::GetEntry {
+                                host: host_clone.clone(),
+                                path: candidate.clone(),
+                                resp: resp_tx,
+                            }).is_err() {
+                                return tauri::http::Response::builder()
+                                    .status(500)
+                                    .body(b"Store thread died".to_vec()).unwrap();
+                            }
+                            match resp_rx.recv().unwrap() {
+                                Ok(Some((mime, bytes, etag))) => {
+                                    found = Some((mime, bytes, etag));
+                                    break;
+                                }
+                                Ok(None) => {}
+                                Err(e) => {
+                                    return tauri::http::Response::builder()
+                                        .status(500)
+                                        .body(format!("Content error: {e}").into_bytes()).unwrap();
+                                }
+                            }
+                        }
+
+                        if let Some((mime, bytes, etag)) = found {
+                            let body = rewrite_urls(&bytes, &mime);
+                            tauri::http::Response::builder()
+                                .status(200)
+                                .header("Content-Type", &mime)
+                                .header("ETag", etag)
+                                .header("Access-Control-Allow-Origin", "*")
+                                .body(body).unwrap()
+                        } else {
+                            tauri::http::Response::builder()
+                                .status(404)
+                                .body(b"Not found".to_vec()).unwrap()
+                        }
+                    }));
+                    let response = match result {
+                        Ok(response) => response,
+                        Err(panic) => {
+                            let msg = if let Some(s) = panic.downcast_ref::<&str>() {
+                                s.to_string()
+                            } else if let Some(s) = panic.downcast_ref::<String>() {
+                                s.clone()
+                            } else {
+                                "unknown panic".to_string()
+                            };
+                            tauri::http::Response::builder()
+                                .status(500)
+                                .body(format!("PANIC: {msg}").into_bytes())
+                                .unwrap()
+                        }
+                    };
+                    responder.respond(response);
+                    return;
+                }
+
+                // 3b. Frontpage: serve static assets from asset resolver, everything else from store
+                if is_frontpage && is_asset {
+                    let key = original_path.trim_start_matches('/');
+                    eprintln!("[sneaker-protocol] serving frontpage asset from resolver: {}", key);
+                    let response = match app_handle.asset_resolver().get(key.to_string()) {
+                        Some(asset) => tauri::http::Response::builder()
+                            .status(200)
+                            .header("Content-Type", asset.mime_type)
+                            .body(asset.bytes)
+                            .unwrap(),
+                        None => tauri::http::Response::builder()
+                            .status(404)
+                            .body(vec![])
+                            .unwrap(),
+                    };
+                    responder.respond(response);
+                    return;
+                }
+
+                // 3c. Frontpage: serve HTML/SPA routes from store
+                if is_frontpage {
+                    eprintln!("[sneaker-protocol] serving frontpage from store: path={}", path);
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         let (resp_tx, resp_rx) = std::sync::mpsc::channel();
                         if tx.send(StoreMsg::Frontpage {
                             order: path.to_string(),
@@ -494,81 +880,33 @@ pub fn run() {
                                     .unwrap()
                             }
                         }
-                    } else if host.len() == 64 {
-                        // 4b. Serve subspace content
-                        let try_paths: Vec<String> = if path.ends_with('/') {
-                            vec![path.to_string(), format!("{}index.html", path)]
-                        } else {
-                            vec![
-                                path.to_string(),
-                                format!("{}.html", path),
-                                format!("{}/index.html", path),
-                            ]
-                        };
-
-                        let mut found: Option<(String, Vec<u8>, String)> = None;
-
-                        for candidate in &try_paths {
-                            let (resp_tx, resp_rx) = std::sync::mpsc::channel();
-                            if tx.send(StoreMsg::GetEntry {
-                                host: host.to_string(),
-                                path: candidate.clone(),
-                                resp: resp_tx,
-                            }).is_err() {
-                                return tauri::http::Response::builder()
-                                    .status(500)
-                                    .body(b"Store thread died".to_vec()).unwrap();
-                            }
-                            match resp_rx.recv().unwrap() {
-                                Ok(Some((mime, bytes, etag))) => {
-                                    found = Some((mime, bytes, etag));
-                                    break;
-                                }
-                                Ok(None) => {
-                                }
-                                Err(e) => {
-                                    return tauri::http::Response::builder()
-                                        .status(500)
-                                        .body(format!("Content error: {e}").into_bytes()).unwrap();
-                                }
-                            }
-                        }
-
-                        if let Some((mime, bytes, etag)) = found {
-                            let body = rewrite_urls(&bytes, &mime);
+                    }));
+                    let response = match result {
+                        Ok(response) => response,
+                        Err(panic) => {
+                            let msg = if let Some(s) = panic.downcast_ref::<&str>() {
+                                s.to_string()
+                            } else if let Some(s) = panic.downcast_ref::<String>() {
+                                s.clone()
+                            } else {
+                                "unknown panic".to_string()
+                            };
                             tauri::http::Response::builder()
-                                .status(200)
-                                .header("Content-Type", &mime)
-                                .header("ETag", etag)
-                                .header("Access-Control-Allow-Origin", "*")
-                                .body(body).unwrap()
-                        } else {
-                            tauri::http::Response::builder()
-                                .status(404)
-                                .body(b"Not found".to_vec()).unwrap()
+                                .status(500)
+                                .body(format!("PANIC: {msg}").into_bytes())
+                                .unwrap()
                         }
-                    } else {
-                        tauri::http::Response::builder()
-                            .status(400)
-                            .body(format!("Invalid host: {host}").into_bytes()).unwrap()
-                    }
-                }));
-                let response = match result {
-                    Ok(response) => response,
-                    Err(panic) => {
-                        let msg = if let Some(s) = panic.downcast_ref::<&str>() {
-                            s.to_string()
-                        } else if let Some(s) = panic.downcast_ref::<String>() {
-                            s.clone()
-                        } else {
-                            "unknown panic".to_string()
-                        };
-                        tauri::http::Response::builder()
-                            .status(500)
-                            .body(format!("PANIC: {msg}").into_bytes())
-                            .unwrap()
-                    }
-                };
+                    };
+                    responder.respond(response);
+                    return;
+                }
+
+                // 3d. Unknown host
+                eprintln!("[sneaker-protocol] invalid host: {}", host);
+                let response = tauri::http::Response::builder()
+                    .status(400)
+                    .body(format!("Invalid host: {host}").into_bytes())
+                    .unwrap();
                 responder.respond(response);
             });
         })
@@ -606,11 +944,17 @@ pub fn run() {
                             if (window !== window.top) return;
                             
                             function normalizeUrl(url) {
-                                if (url.indexOf("http://sneaker.localhost/") === 0) {
-                                    var rest = url.substring("http://sneaker.localhost/".length);
-                                    var slash = rest.indexOf("/");
-                                    if (slash === -1) return "sneaker://" + rest + "/";
-                                    return "sneaker://" + rest.substring(0, slash) + rest.substring(slash);
+                                var prefix = "http://";
+                                var suffix = ".localhost";
+                                if (url.indexOf(prefix) === 0) {
+                                    var rest = url.substring(prefix.length);
+                                    var dotIndex = rest.indexOf(suffix);
+                                    if (dotIndex !== -1) {
+                                        var host = rest.substring(0, dotIndex);
+                                        var path = rest.substring(dotIndex + suffix.length);
+                                        if (!path || path.length === 0) path = "/";
+                                        return "sneaker://" + host + path;
+                                    }
                                 }
                                 return url;
                             }
@@ -673,7 +1017,7 @@ pub fn run() {
                                                 Some(q) => format!("{}?{}", target_url.path(), q),
                                                 None => target_url.path().to_string(),
                                             };
-                                            if let Ok(u) = url::Url::parse(&format!("http://sneaker.localhost/{}{}", host, path_and_query)) {
+                                            if let Ok(u) = url::Url::parse(&format!("http://{}.localhost{}", host, path_and_query)) {
                                                 u
                                             } else {
                                                 target_url
@@ -703,6 +1047,19 @@ pub fn run() {
             {
                 let state = app.state::<ContentWebview>();
                 *state.0.lock().unwrap() = Some(webview);
+            }
+
+            #[cfg(target_os = "windows")]
+            {
+                let state = app.state::<ContentWebview>();
+                let wv_clone = state.0.lock().unwrap().clone();
+                if let Some(ref wv) = wv_clone {
+                    let _ = webview2_handler::register_wildcard_localhost_handler(
+                        wv,
+                        store_tx_for_setup.clone(),
+                        import_state_for_setup.clone(),
+                    );
+                }
             }
 
             #[cfg(target_os = "linux")]
