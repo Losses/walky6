@@ -412,6 +412,13 @@ mod webview2_handler {
                         ).expect("failed to add filter");
                     }
                 }
+
+                eprintln!("[webview2-handler] filter registered at {:?}", std::time::Instant::now());
+
+                if let Ok(settings) = core_webview.Settings() {
+                    let _ = settings.SetIsBuiltInErrorPageEnabled(false);
+                    eprintln!("[webview2-handler] disabled built-in error pages");
+                }
             }
 
             let store_tx_clone = store_tx.clone();
@@ -1155,7 +1162,7 @@ pub fn run() {
             let _ = _main_webview.set_auto_resize(false);
 
             let builder =
-                tauri::webview::WebviewBuilder::new("content", tauri::WebviewUrl::CustomProtocol(home_url.clone()))
+                tauri::webview::WebviewBuilder::new("content", tauri::WebviewUrl::External("about:blank".parse().unwrap()))
                     .initialization_script(r#"
                         (function() {
                             if (window !== window.top) return;
@@ -1250,25 +1257,21 @@ pub fn run() {
                 )
                 .expect("failed to add content webview");
 
+            #[cfg(target_os = "windows")]
+            let _ = webview2_handler::register_wildcard_localhost_handler(
+                &webview,
+                store_tx_for_setup.clone(),
+                import_state_for_setup.clone(),
+            );
+
+            let _ = webview.navigate(home_url);
+
             #[cfg(not(target_os = "linux"))]
             let _ = webview.set_auto_resize(false);
 
             {
                 let state = app.state::<ContentWebview>();
                 *state.0.lock().unwrap() = Some(webview);
-            }
-
-            #[cfg(target_os = "windows")]
-            {
-                let state = app.state::<ContentWebview>();
-                let wv_clone = state.0.lock().unwrap().clone();
-                if let Some(ref wv) = wv_clone {
-                    let _ = webview2_handler::register_wildcard_localhost_handler(
-                        wv,
-                        store_tx_for_setup.clone(),
-                        import_state_for_setup.clone(),
-                    );
-                }
             }
 
             #[cfg(target_os = "linux")]
