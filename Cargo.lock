@@ -4914,6 +4914,7 @@ name = "walky6"
 version = "1.0.0"
 dependencies = [
  "anyhow",
+ "dirs",
  "gtk",
  "mime_guess2",
  "regex-lite",

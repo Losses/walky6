@@ -82,13 +82,17 @@ fn ensure_sneakerweb_dir() -> PathBuf {
         let _ = std::fs::create_dir_all(&path);
         return path;
     }
-    if let Ok(cwd) = std::env::current_dir() {
-        let mut local_dir = cwd;
-        local_dir.push(".sneakerweb_store");
-        let _ = std::fs::create_dir_all(&local_dir);
-        return local_dir;
+    if let Some(home) = std::env::home_dir() {
+        let mut data_dir = home;
+        data_dir.push(".sneakerweb");
+        let _ = std::fs::create_dir_all(&data_dir);
+        return data_dir;
     }
-    PathBuf::from(".sneakerweb_store")
+    let mut data_dir = dirs::data_local_dir()
+        .unwrap_or_else(|| PathBuf::from("."));
+    data_dir.push("walky6");
+    let _ = std::fs::create_dir_all(&data_dir);
+    data_dir
 }
 
 #[cfg(target_os = "windows")]
