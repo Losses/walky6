@@ -1,0 +1,88 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: '--target universal-apple-darwin'
+          - platform: ubuntu-22.04
+            args: ''
+          - platform: windows-latest
+            args: ''
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Rust targets for macOS universal build
+        if: matrix.platform == 'macos-latest'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Setup sneakerweb vendor dependency (Bash)
+        shell: bash
+        run: |
+          git config --global core.autocrlf false
+          mkdir -p vendor
+          git clone https://codeberg.org/worm-blossom/sneakerweb vendor/sneakerweb
+          cd vendor/sneakerweb
+          git checkout 888cf132207a2bf0622a5633a2d347e9e910538c
+          git apply ../../patches/sneakerweb.patch
+
+      - name: Setup bab_rs vendor dependency (Bash)
+        shell: bash
+        run: |
+          git clone https://codeberg.org/worm-blossom/bab_rs vendor/bab_rs
+          cd vendor/bab_rs
+          git checkout 2dd7466083424eccdecc1c2f43a36fef7acc8a83
+          git apply ../../patches/bab_rs.patch
+
+      - name: Setup willow25 vendor dependency (Bash)
+        shell: bash
+        run: |
+          git clone https://codeberg.org/worm-blossom/willow_rs vendor/willow25
+          cd vendor/willow25
+          git checkout 17b1a057c35a0da3710fdebb57804fad4a19cc3c
+          git apply ../../patches/willow25.patch
+
+      - name: Install system dependencies (Ubuntu only)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils
+
+      - name: Install frontend dependencies
+        run: bun install
+        working-directory: walky6
+
+      - name: Rust Cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: .
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v1
+        id: tauri-build
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: walky6
+          args: ${{ matrix.args }}
+          releaseId: ${{ github.event.release.id }}
+          includeUpdaterJson: false
