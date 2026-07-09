@@ -4,6 +4,19 @@ use std::sync::atomic::{AtomicU32, AtomicU64, AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 
+struct CountingReader<R> {
+    inner: R,
+    bytes_read: Arc<AtomicU64>,
+}
+
+impl<R: Read> Read for CountingReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.bytes_read.fetch_add(n as u64, Ordering::Relaxed);
+        Ok(n)
+    }
+}
+
 const TOOLBAR_H: u32 = 90;
 
 enum StoreMsg {
@@ -38,13 +51,53 @@ fn start_store_thread(store_dir: PathBuf) -> std::sync::mpsc::Sender<StoreMsg> {
                     let _ = resp.send(result);
                 }
                 StoreMsg::Import { file_path, handle, resp } => {
+                    eprintln!("[import] starting import of: {:?}", file_path);
+                    let import_path;
+                    let mut temp_guard: Option<TempFileGuard> = None;
+
+                    if is_brotli_compressed(&file_path) {
+                        eprintln!("[import] detected brotli compression, decompressing...");
+                        handle.phase.store(
+                            sneakerweb::import::PHASE_DECODING,
+                            Ordering::Relaxed,
+                        );
+                        if let Ok(meta) = std::fs::metadata(&file_path) {
+                            handle.total_bytes.store(meta.len(), Ordering::Relaxed);
+                        }
+                        match decompress_brotli_to_temp(&file_path, &handle) {
+                            Ok((tmp_path, guard)) => {
+                                eprintln!("[import] brotli decompression complete: {:?}", tmp_path);
+                                import_path = tmp_path;
+                                temp_guard = Some(guard);
+                            }
+                            Err(e) => {
+                                eprintln!("[import] brotli decompression failed: {:?}", e);
+                                handle.phase.store(
+                                    sneakerweb::import::PHASE_DONE,
+                                    Ordering::Relaxed,
+                                );
+                                let _ = resp.send(Err(e));
+                                continue;
+                            }
+                        }
+                    } else {
+                        import_path = file_path;
+                    }
+
                     let args = sneakerweb::import::ImportArgs {
-                        src: file_path,
+                        src: import_path,
                         mode: None,
                     };
                     let result = smol::block_on(
-                        sneakerweb::import::import_sneak_into_store(&args, &handle, &mut store),
+                        sneakerweb::import::import_sneak_into_store(
+                            &args, &handle, &mut store,
+                        ),
                     );
+                    match &result {
+                        Ok(()) => eprintln!("[import] import completed successfully"),
+                        Err(e) => eprintln!("[import] import failed: {:?}", e),
+                    }
+                    drop(temp_guard);
                     let _ = resp.send(result);
                 }
             }
@@ -63,6 +116,7 @@ pub struct ImportState {
     pub processed_bytes: AtomicU64,
     pub total_bytes: AtomicU64,
     pub processed_entries: AtomicU64,
+    pub error_message: Mutex<Option<String>>,
 }
 
 impl ImportState {
@@ -73,6 +127,7 @@ impl ImportState {
             processed_bytes: AtomicU64::new(0),
             total_bytes: AtomicU64::new(0),
             processed_entries: AtomicU64::new(0),
+            error_message: Mutex::new(None),
         })
     }
 }
@@ -207,6 +262,9 @@ impl Drop for TempFileGuard {
 }
 
 fn is_brotli_compressed(file_path: &PathBuf) -> bool {
+    if file_path.extension().map(|e| e == "br").unwrap_or(false) {
+        return true;
+    }
     let mut file = match std::fs::File::open(file_path) {
         Ok(f) => f,
         Err(_) => return false,
@@ -215,13 +273,30 @@ fn is_brotli_compressed(file_path: &PathBuf) -> bool {
     file.read_exact(&mut magic).is_ok() && magic == BROTLI_MAGIC
 }
 
-fn decompress_brotli_to_temp(src: &PathBuf) -> anyhow::Result<(PathBuf, TempFileGuard)> {
+fn decompress_brotli_to_temp(
+    src: &PathBuf,
+    handle: &sneakerweb::import::ProgressHandle,
+) -> anyhow::Result<(PathBuf, TempFileGuard)> {
     let file = std::fs::File::open(src)?;
-    let mut decompressor = brotli::Decompressor::new(file, 65536);
+    let bytes_read = Arc::new(AtomicU64::new(0));
+    let counting_reader = CountingReader {
+        inner: file,
+        bytes_read: bytes_read.clone(),
+    };
+    let mut decompressor = brotli::Decompressor::new(counting_reader, 65536);
 
     let tmp_path = std::env::temp_dir().join(format!("walky6_import_{}.snk", std::process::id()));
     let mut out_file = std::fs::File::create(&tmp_path)?;
-    std::io::copy(&mut decompressor, &mut out_file)?;
+
+    let mut buf = [0u8; 65536];
+    loop {
+        let n = decompressor.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        std::io::Write::write_all(&mut out_file, &buf[..n])?;
+        handle.processed_bytes.store(bytes_read.load(Ordering::Relaxed), Ordering::Relaxed);
+    }
 
     Ok((tmp_path.clone(), TempFileGuard(tmp_path)))
 }
@@ -231,6 +306,7 @@ fn run_import_internal(app: AppHandle, file_path: PathBuf, import_state: Arc<Imp
     import_state.phase.store(1, Ordering::Relaxed);
     import_state.processed_bytes.store(0, Ordering::Relaxed);
     import_state.processed_entries.store(0, Ordering::Relaxed);
+    *import_state.error_message.lock().unwrap() = None;
 
     let handle = sneakerweb::import::ProgressHandle::new();
     import_state.total_bytes.store(0, Ordering::Relaxed);
@@ -260,21 +336,10 @@ fn run_import_internal(app: AppHandle, file_path: PathBuf, import_state: Arc<Imp
         }
     });
 
-    let import_file_path;
-    let mut _temp_guard: Option<TempFileGuard> = None;
-
-    if is_brotli_compressed(&file_path) {
-        let (tmp_path, guard) = decompress_brotli_to_temp(&file_path)?;
-        _temp_guard = Some(guard);
-        import_file_path = tmp_path;
-    } else {
-        import_file_path = file_path;
-    }
-
     let (resp_tx, resp_rx) = std::sync::mpsc::channel::<anyhow::Result<()>>();
     store_tx
         .send(StoreMsg::Import {
-            file_path: import_file_path,
+            file_path,
             handle,
             resp: resp_tx,
         })
@@ -288,15 +353,16 @@ fn run_import_internal(app: AppHandle, file_path: PathBuf, import_state: Arc<Imp
 
     let _ = poller.join();
 
-    drop(_temp_guard);
-
     let result = match &import_result {
         Ok(()) => {
             import_state.phase.store(3, Ordering::Relaxed);
+            import_state.is_importing.store(false, Ordering::Relaxed);
             Ok(())
         }
         Err(e) => {
             import_state.phase.store(4, Ordering::Relaxed);
+            *import_state.error_message.lock().unwrap() = Some(format!("{}", e));
+            import_state.is_importing.store(false, Ordering::Relaxed);
             Err(anyhow::anyhow!("Import failed: {}", e))
         }
     };
@@ -588,10 +654,11 @@ mod webview2_handler {
                     let processed_bytes = import_state_clone.processed_bytes.load(Ordering::Relaxed);
                     let total_bytes = import_state_clone.total_bytes.load(Ordering::Relaxed);
                     let processed_entries = import_state_clone.processed_entries.load(Ordering::Relaxed);
+                    let message = import_state_clone.error_message.lock().unwrap().clone().unwrap_or_default();
 
                     let json = format!(
-                        r#"{{"is_importing":{},"phase":"{}","processed_bytes":{},"total_bytes":{},"processed_entries":{}}}"#,
-                        is_importing, phase, processed_bytes, total_bytes, processed_entries
+                        r#"{{"is_importing":{},"phase":"{}","processed_bytes":{},"total_bytes":{},"processed_entries":{},"message":"{}"}}"#,
+                        is_importing, phase, processed_bytes, total_bytes, processed_entries, message
                     );
                     let stream = unsafe { SHCreateMemStream(Some(json.as_bytes())) };
                     let status = HSTRING::from("OK");
@@ -995,10 +1062,11 @@ pub fn run() {
                     let processed_bytes = import_state.processed_bytes.load(Ordering::Relaxed);
                     let total_bytes = import_state.total_bytes.load(Ordering::Relaxed);
                     let processed_entries = import_state.processed_entries.load(Ordering::Relaxed);
+                    let message = import_state.error_message.lock().unwrap().clone().unwrap_or_default();
 
                     let json = format!(
-                        r#"{{"is_importing":{},"phase":"{}","processed_bytes":{},"total_bytes":{},"processed_entries":{}}}"#,
-                        is_importing, phase, processed_bytes, total_bytes, processed_entries
+                        r#"{{"is_importing":{},"phase":"{}","processed_bytes":{},"total_bytes":{},"processed_entries":{},"message":"{}"}}"#,
+                        is_importing, phase, processed_bytes, total_bytes, processed_entries, message
                     );
                     let response = tauri::http::Response::builder()
                         .status(200)
