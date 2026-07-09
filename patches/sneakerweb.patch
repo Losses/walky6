@@ -259,7 +259,7 @@ index 8dddd90..f29230f 100644
                          Err(err) => oh_no(&format!("{}", err)).await,
                      }
 diff --git a/src/serve.rs b/src/serve.rs
-index fd4597a..a32620e 100644
+index fd4597a..f258c94 100644
 --- a/src/serve.rs
 +++ b/src/serve.rs
 @@ -37,12 +37,12 @@ use crate::util::sneakerweb_dir;
@@ -459,11 +459,12 @@ index fd4597a..a32620e 100644
      store: &mut PersistentStore,
      order: FrontPageOrder,
      buffer: &mut Buffer,
-@@ -528,3 +536,98 @@ async fn render_frontpage(
+@@ -528,3 +536,102 @@ async fn render_frontpage(
  
      Ok(())
  }
 +
++#[allow(dead_code)]
 +pub async fn render_frontpage_with_store(
 +    store: &mut PersistentStore,
 +    order: &str,
@@ -479,6 +480,7 @@ index fd4597a..a32620e 100644
 +    Ok(buffer.rendered().as_inner().to_string())
 +}
 +
++#[allow(dead_code)]
 +pub async fn get_entry_with_store(
 +    store: &mut PersistentStore,
 +    subspace_hex: &str,
@@ -538,6 +540,7 @@ index fd4597a..a32620e 100644
 +    Ok(Some((mime, bytes, etag)))
 +}
 +
++#[allow(dead_code)]
 +pub async fn generate_frontpage_html(
 +    store_dir: &std::path::Path,
 +    order: &str,
@@ -548,6 +551,7 @@ index fd4597a..a32620e 100644
 +    render_frontpage_with_store(&mut store, order).await
 +}
 +
++#[allow(dead_code)]
 +pub async fn get_entry_content(
 +    store_dir: &std::path::Path,
 +    subspace_hex: &str,

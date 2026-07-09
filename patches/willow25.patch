@@ -55,8 +55,19 @@ index 63180b4..6562934 100644
 -
 -[lints]
 -workspace = true
+diff --git a/willow25/src/lib.rs b/willow25/src/lib.rs
+index 0b7f76b..e792527 100644
+--- a/willow25/src/lib.rs
++++ b/willow25/src/lib.rs
+@@ -1,5 +1,6 @@
+ #![doc(html_logo_url = "https://willowprotocol.org/assets/willow_emblem_standalone.png")]
+ #![cfg_attr(not(feature = "std"), no_std)]
++#![allow(async_fn_in_trait)]
+ 
+ //! An implementation of the [Willow specifications](https://willowprotocol.org/).
+ //!
 diff --git a/willow25/src/storage/persistent_store.rs b/willow25/src/storage/persistent_store.rs
-index db8e4d3..5c0ca71 100644
+index db8e4d3..1bda1c1 100644
 --- a/willow25/src/storage/persistent_store.rs
 +++ b/willow25/src/storage/persistent_store.rs
 @@ -90,7 +90,7 @@ impl Clone for PersistentStore {
@@ -95,6 +106,15 @@ index db8e4d3..5c0ca71 100644
              .await
              .map_err(|err| {
                  PersistentStoreError::Bab(OperationsError::Internal {
+@@ -317,7 +317,7 @@ impl PersistentStore {
+     where
+         P: BulkProducer<Item = u8>,
+     {
+-        let mut store = self.rc.write().await;
++        let store = self.rc.write().await;
+ 
+         let namespace_keyspace = store.namespace_keyspace(namespace_id)?;
+ 
 @@ -327,7 +327,7 @@ impl PersistentStore {
          let tmp_key = payload_key(tmp_root.clone(), namespace_id, subspace_id, path).await;
  
@@ -122,6 +142,15 @@ index db8e4d3..5c0ca71 100644
  
          payload_store.flush().await?;
  
+@@ -425,7 +425,7 @@ impl PersistentStore {
+     {
+         // Produce a payload digest.
+ 
+-        let mut store = self.rc.write().await;
++        let store = self.rc.write().await;
+ 
+         let namespace_keyspace = store.namespace_keyspace(namespace_id)?;
+ 
 @@ -435,7 +435,7 @@ impl PersistentStore {
          let tmp_key = payload_key(tmp_root.clone(), namespace_id, subspace_id, path).await;
  
@@ -139,6 +168,15 @@ index db8e4d3..5c0ca71 100644
 +        SingleSliceStore::<FileBackend>::rename(&mut *store.bab_key_state.write().await, &tmp_key, key).await?;
  
          payload_store.flush().await?;
+ 
+@@ -645,7 +645,7 @@ impl Store for PersistentStore {
+             return Ok(true);
+         }
+ 
+-        let mut store = self.rc.write().await;
++        let store = self.rc.write().await;
+ 
+         let namespace_keyspace = store.namespace_keyspace(entry.namespace_id())?;
  
 @@ -676,7 +676,7 @@ impl Store for PersistentStore {
          for (fjall_key, payload_path_buf) in keys_to_prune {
