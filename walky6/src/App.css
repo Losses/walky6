@@ -4,7 +4,13 @@
   box-sizing: border-box;
 }
 
-body, html, div, p, button, label, a {
+body,
+html,
+div,
+p,
+button,
+label,
+a {
   user-select: none;
 }
 
@@ -54,12 +60,17 @@ body,
   gap: 2px;
   cursor: pointer;
   background: var(--surface);
+}
+
+.toolbar-btn,
+.go-btn {
   border: none;
   box-shadow: none;
   filter: grayscale(100%);
 }
 
-.toolbar-btn:hover {
+.toolbar-btn:hover,
+.go-btn:hover {
   box-shadow: inset -1px -1px #0a0a0a, inset 1px 1px #dfdfdf, inset -2px -2px grey, inset 2px 2px #fff;
   filter: grayscale(0);
 }
