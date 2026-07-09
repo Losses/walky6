@@ -805,7 +805,9 @@ pub fn run() {
     let store_tx_for_manage = store_tx.clone();
     let store_tx_for_protocol = store_tx;
     let protocol_import_state = import_state.clone();
+    #[cfg(target_os = "windows")]
     let import_state_for_setup = import_state.clone();
+    #[cfg(target_os = "windows")]
     let store_tx_for_setup = store_tx_for_manage.clone();
 
     tauri::Builder::default()
