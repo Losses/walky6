@@ -18,6 +18,7 @@ impl<R: Read> Read for CountingReader<R> {
 }
 
 const TOOLBAR_H: u32 = 90;
+const PHASE_DECOMPRESSING: u32 = 5;
 
 enum StoreMsg {
     Frontpage { order: String, resp: std::sync::mpsc::Sender<anyhow::Result<String>> },
@@ -58,7 +59,7 @@ fn start_store_thread(store_dir: PathBuf) -> std::sync::mpsc::Sender<StoreMsg> {
                     if is_brotli_compressed(&file_path) {
                         eprintln!("[import] detected brotli compression, decompressing...");
                         handle.phase.store(
-                            sneakerweb::import::PHASE_DECODING,
+                            PHASE_DECOMPRESSING,
                             Ordering::Relaxed,
                         );
                         if let Ok(meta) = std::fs::metadata(&file_path) {
@@ -231,12 +232,14 @@ fn progress_to_event(handle: &sneakerweb::import::ProgressHandle) -> ImportProgr
         sneakerweb::import::PHASE_DECODING => "decoding",
         sneakerweb::import::PHASE_IMPORTING => "importing",
         sneakerweb::import::PHASE_DONE => "done",
+        PHASE_DECOMPRESSING => "decompressing",
         _ => "unknown",
     };
     let processed = handle.processed_bytes.load(Ordering::Relaxed);
     let total = handle.total_bytes.load(Ordering::Relaxed);
     let processed_entries = handle.processed_entries.load(Ordering::Relaxed);
     let message = match phase {
+        "decompressing" => "Decompressing...",
         "decoding" => "Decoding entries...",
         "importing" => "Importing entries...",
         "done" => "Import complete",
@@ -649,12 +652,26 @@ mod webview2_handler {
                         2 => "importing",
                         3 => "done",
                         4 => "error",
+                        PHASE_DECOMPRESSING => "decompressing",
                         _ => "unknown",
                     };
-                    let processed_bytes = import_state_clone.processed_bytes.load(Ordering::Relaxed);
-                    let total_bytes = import_state_clone.total_bytes.load(Ordering::Relaxed);
+                    let raw_processed = import_state_clone.processed_bytes.load(Ordering::Relaxed);
+                    let raw_total = import_state_clone.total_bytes.load(Ordering::Relaxed);
                     let processed_entries = import_state_clone.processed_entries.load(Ordering::Relaxed);
                     let message = import_state_clone.error_message.lock().unwrap().clone().unwrap_or_default();
+
+                    let (total_bytes, processed_bytes) = if phase_val == PHASE_DECOMPRESSING {
+                        let pct = if raw_total > 0 { (raw_processed as f64 / raw_total as f64 * 300.0) as u64 } else { 0 };
+                        (1000u64, pct)
+                    } else if phase_val == 1 || phase_val == 2 {
+                        let offset = 300u64;
+                        let pct = if raw_total > 0 { offset + (raw_processed as f64 / raw_total as f64 * 700.0) as u64 } else { offset };
+                        (1000u64, pct)
+                    } else if phase_val == 3 {
+                        (1000u64, 1000u64)
+                    } else {
+                        (raw_total, raw_processed)
+                    };
 
                     let json = format!(
                         r#"{{"is_importing":{},"phase":"{}","processed_bytes":{},"total_bytes":{},"processed_entries":{},"message":"{}"}}"#,
@@ -1057,12 +1074,26 @@ pub fn run() {
                         2 => "importing",
                         3 => "done",
                         4 => "error",
+                        PHASE_DECOMPRESSING => "decompressing",
                         _ => "unknown",
                     };
-                    let processed_bytes = import_state.processed_bytes.load(Ordering::Relaxed);
-                    let total_bytes = import_state.total_bytes.load(Ordering::Relaxed);
+                    let raw_processed = import_state.processed_bytes.load(Ordering::Relaxed);
+                    let raw_total = import_state.total_bytes.load(Ordering::Relaxed);
                     let processed_entries = import_state.processed_entries.load(Ordering::Relaxed);
                     let message = import_state.error_message.lock().unwrap().clone().unwrap_or_default();
+
+                    let (total_bytes, processed_bytes) = if phase_val == PHASE_DECOMPRESSING {
+                        let pct = if raw_total > 0 { (raw_processed as f64 / raw_total as f64 * 300.0) as u64 } else { 0 };
+                        (1000u64, pct)
+                    } else if phase_val == 1 || phase_val == 2 {
+                        let offset = 300u64;
+                        let pct = if raw_total > 0 { offset + (raw_processed as f64 / raw_total as f64 * 700.0) as u64 } else { offset };
+                        (1000u64, pct)
+                    } else if phase_val == 3 {
+                        (1000u64, 1000u64)
+                    } else {
+                        (raw_total, raw_processed)
+                    };
 
                     let json = format!(
                         r#"{{"is_importing":{},"phase":"{}","processed_bytes":{},"total_bytes":{},"processed_entries":{},"message":"{}"}}"#,

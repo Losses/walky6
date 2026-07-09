@@ -22,7 +22,9 @@ function ProgressView() {
           setPercent(pct);
         }
 
-        if (data.phase === "decoding") {
+        if (data.phase === "decompressing") {
+          setMessage(`Decompressing... (${percent}%)`);
+        } else if (data.phase === "decoding") {
           setMessage(`Decoding entries... (${percent}%)`);
         } else if (data.phase === "importing") {
           setMessage(`Importing entries... (${percent}%)`);
