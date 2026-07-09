@@ -1,3 +1,4 @@
+use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -195,6 +196,36 @@ fn progress_to_event(handle: &sneakerweb::import::ProgressHandle) -> ImportProgr
     }
 }
 
+const BROTLI_MAGIC: [u8; 4] = [0xCE, 0xB2, 0xCF, 0x81];
+
+struct TempFileGuard(PathBuf);
+
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+fn is_brotli_compressed(file_path: &PathBuf) -> bool {
+    let mut file = match std::fs::File::open(file_path) {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
+    let mut magic = [0u8; 4];
+    file.read_exact(&mut magic).is_ok() && magic == BROTLI_MAGIC
+}
+
+fn decompress_brotli_to_temp(src: &PathBuf) -> anyhow::Result<(PathBuf, TempFileGuard)> {
+    let file = std::fs::File::open(src)?;
+    let mut decompressor = brotli::Decompressor::new(file, 65536);
+
+    let tmp_path = std::env::temp_dir().join(format!("walky6_import_{}.snk", std::process::id()));
+    let mut out_file = std::fs::File::create(&tmp_path)?;
+    std::io::copy(&mut decompressor, &mut out_file)?;
+
+    Ok((tmp_path.clone(), TempFileGuard(tmp_path)))
+}
+
 fn run_import_internal(app: AppHandle, file_path: PathBuf, import_state: Arc<ImportState>, store_tx: std::sync::mpsc::Sender<StoreMsg>) -> anyhow::Result<()> {
     import_state.is_importing.store(true, Ordering::Relaxed);
     import_state.phase.store(1, Ordering::Relaxed);
@@ -229,10 +260,21 @@ fn run_import_internal(app: AppHandle, file_path: PathBuf, import_state: Arc<Imp
         }
     });
 
+    let import_file_path;
+    let mut _temp_guard: Option<TempFileGuard> = None;
+
+    if is_brotli_compressed(&file_path) {
+        let (tmp_path, guard) = decompress_brotli_to_temp(&file_path)?;
+        _temp_guard = Some(guard);
+        import_file_path = tmp_path;
+    } else {
+        import_file_path = file_path;
+    }
+
     let (resp_tx, resp_rx) = std::sync::mpsc::channel::<anyhow::Result<()>>();
     store_tx
         .send(StoreMsg::Import {
-            file_path,
+            file_path: import_file_path,
             handle,
             resp: resp_tx,
         })
@@ -241,12 +283,12 @@ fn run_import_internal(app: AppHandle, file_path: PathBuf, import_state: Arc<Imp
     let import_result = resp_rx
         .recv()
         .map_err(|_| anyhow::anyhow!("store thread channel closed"))?;
-    // import_result is anyhow::Result<()> from import_sneak_into_store
 
-    // Signal poller to stop (in case import errored without setting PHASE_DONE)
     signal_handle.phase.store(sneakerweb::import::PHASE_DONE, Ordering::Relaxed);
 
     let _ = poller.join();
+
+    drop(_temp_guard);
 
     let result = match &import_result {
         Ok(()) => {
