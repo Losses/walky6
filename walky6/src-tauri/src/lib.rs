@@ -30,81 +30,83 @@ enum StoreMsg {
     },
 }
 
-fn start_store_thread(store_dir: PathBuf) -> std::sync::mpsc::Sender<StoreMsg> {
-    let (tx, rx) = std::sync::mpsc::channel::<StoreMsg>();
+fn run_store_loop(mut store: sneakerweb::PersistentStore, rx: std::sync::mpsc::Receiver<StoreMsg>) {
+    while let Ok(msg) = rx.recv() {
+        match msg {
+            StoreMsg::Frontpage { order, resp } => {
+                let result = smol::block_on(
+                    sneakerweb::serve::render_frontpage_with_store(&mut store, &order),
+                );
+                let _ = resp.send(result);
+            }
+            StoreMsg::GetEntry { host, path, resp } => {
+                let result = smol::block_on(
+                    sneakerweb::serve::get_entry_with_store(&mut store, &host, &path),
+                );
+                let _ = resp.send(result);
+            }
+            StoreMsg::Import { file_path, handle, resp } => {
+                eprintln!("[import] starting import of: {:?}", file_path);
+                let import_path;
+                let mut temp_guard: Option<TempFileGuard> = None;
+
+                if is_brotli_compressed(&file_path) {
+                    eprintln!("[import] detected brotli compression, decompressing...");
+                    handle.phase.store(
+                        PHASE_DECOMPRESSING,
+                        Ordering::Relaxed,
+                    );
+                    if let Ok(meta) = std::fs::metadata(&file_path) {
+                        handle.total_bytes.store(meta.len(), Ordering::Relaxed);
+                    }
+                    match decompress_brotli_to_temp(&file_path, &handle) {
+                        Ok((tmp_path, guard)) => {
+                            eprintln!("[import] brotli decompression complete: {:?}", tmp_path);
+                            import_path = tmp_path;
+                            temp_guard = Some(guard);
+                        }
+                        Err(e) => {
+                            eprintln!("[import] brotli decompression failed: {:?}", e);
+                            handle.phase.store(
+                                sneakerweb::import::PHASE_DONE,
+                                Ordering::Relaxed,
+                            );
+                            let _ = resp.send(Err(e));
+                            continue;
+                        }
+                    }
+                } else {
+                    import_path = file_path;
+                }
+
+                let args = sneakerweb::import::ImportArgs {
+                    src: import_path,
+                    mode: None,
+                };
+                let result = smol::block_on(
+                    sneakerweb::import::import_sneak_into_store(
+                        &args, &handle, &mut store,
+                    ),
+                );
+                match &result {
+                    Ok(()) => eprintln!("[import] import completed successfully"),
+                    Err(e) => eprintln!("[import] import failed: {:?}", e),
+                }
+                drop(temp_guard);
+                let _ = resp.send(result);
+            }
+        }
+    }
+}
+
+fn start_store_thread(store_dir: PathBuf, rx: std::sync::mpsc::Receiver<StoreMsg>) {
     std::thread::spawn(move || {
-        let mut store = smol::block_on(
+        let store = smol::block_on(
             sneakerweb::PersistentStore::new(&store_dir),
         )
         .expect("failed to open sneakerweb storage");
-        while let Ok(msg) = rx.recv() {
-            match msg {
-                StoreMsg::Frontpage { order, resp } => {
-                    let result = smol::block_on(
-                        sneakerweb::serve::render_frontpage_with_store(&mut store, &order),
-                    );
-                    let _ = resp.send(result);
-                }
-                StoreMsg::GetEntry { host, path, resp } => {
-                    let result = smol::block_on(
-                        sneakerweb::serve::get_entry_with_store(&mut store, &host, &path),
-                    );
-                    let _ = resp.send(result);
-                }
-                StoreMsg::Import { file_path, handle, resp } => {
-                    eprintln!("[import] starting import of: {:?}", file_path);
-                    let import_path;
-                    let mut temp_guard: Option<TempFileGuard> = None;
-
-                    if is_brotli_compressed(&file_path) {
-                        eprintln!("[import] detected brotli compression, decompressing...");
-                        handle.phase.store(
-                            PHASE_DECOMPRESSING,
-                            Ordering::Relaxed,
-                        );
-                        if let Ok(meta) = std::fs::metadata(&file_path) {
-                            handle.total_bytes.store(meta.len(), Ordering::Relaxed);
-                        }
-                        match decompress_brotli_to_temp(&file_path, &handle) {
-                            Ok((tmp_path, guard)) => {
-                                eprintln!("[import] brotli decompression complete: {:?}", tmp_path);
-                                import_path = tmp_path;
-                                temp_guard = Some(guard);
-                            }
-                            Err(e) => {
-                                eprintln!("[import] brotli decompression failed: {:?}", e);
-                                handle.phase.store(
-                                    sneakerweb::import::PHASE_DONE,
-                                    Ordering::Relaxed,
-                                );
-                                let _ = resp.send(Err(e));
-                                continue;
-                            }
-                        }
-                    } else {
-                        import_path = file_path;
-                    }
-
-                    let args = sneakerweb::import::ImportArgs {
-                        src: import_path,
-                        mode: None,
-                    };
-                    let result = smol::block_on(
-                        sneakerweb::import::import_sneak_into_store(
-                            &args, &handle, &mut store,
-                        ),
-                    );
-                    match &result {
-                        Ok(()) => eprintln!("[import] import completed successfully"),
-                        Err(e) => eprintln!("[import] import failed: {:?}", e),
-                    }
-                    drop(temp_guard);
-                    let _ = resp.send(result);
-                }
-            }
-        }
+        run_store_loop(store, rx);
     });
-    tx
 }
 
 pub struct StoreTx(pub(crate) std::sync::mpsc::Sender<StoreMsg>);
@@ -920,13 +922,9 @@ pub fn run() {
     }
 
     let import_state = ImportState::new();
-
     let dir = ensure_sneakerweb_dir();
-    unsafe {
-        std::env::set_var("SNEAKERWEB_DIR", &dir);
-    }
 
-    let store_tx = start_store_thread(dir);
+    let (store_tx, store_rx) = std::sync::mpsc::channel::<StoreMsg>();
 
     let store_tx_for_manage = store_tx.clone();
     let store_tx_for_protocol = store_tx;
@@ -1282,6 +1280,23 @@ pub fn run() {
             });
         })
         .setup(move |app| {
+            unsafe {
+                std::env::set_var("SNEAKERWEB_DIR", &dir);
+            }
+
+            let db_path = dir.join("db");
+            if fjall::Database::builder(&db_path).open().is_err() {
+                use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+                app.dialog()
+                    .message("Another instance of walky6 is already running with this data directory.\nPlease close the other instance first.")
+                    .kind(MessageDialogKind::Error)
+                    .title("walky6")
+                    .blocking_show();
+                std::process::exit(1);
+            }
+
+            start_store_thread(dir, store_rx);
+
             let window = tauri::window::WindowBuilder::new(app, "main")
                 .title("walky6")
                 .inner_size(1024.0, 768.0)

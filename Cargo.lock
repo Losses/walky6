@@ -4916,6 +4916,7 @@ dependencies = [
  "anyhow",
  "brotli",
  "dirs",
+ "fjall",
  "gtk",
  "mime_guess2",
  "regex-lite",
