@@ -396,7 +396,7 @@ async fn pick_file(app: AppHandle) -> Result<String, String> {
     let file_path = app
         .dialog()
         .file()
-        .add_filter("Sneaker files", &["snk", "br"])
+        .add_filter("Sneaker files", &["snk", "snk.br"])
         .set_title("Import .snk file")
         .blocking_pick_file();
 
