@@ -1286,6 +1286,11 @@ pub fn run() {
 
             let db_path = dir.join("db");
             if fjall::Database::builder(&db_path).open().is_err() {
+                eprintln!(
+                    "{}",
+                    "Error: Another instance of walky6 is already running with this data directory.\n\
+                     Please close the other instance first."
+                );
                 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
                 app.dialog()
                     .message("Another instance of walky6 is already running with this data directory.\nPlease close the other instance first.")
