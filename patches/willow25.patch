@@ -66,6 +66,20 @@ index 0b7f76b..e792527 100644
  
  //! An implementation of the [Willow specifications](https://willowprotocol.org/).
  //!
+diff --git a/willow25/src/paths/mod.rs b/willow25/src/paths/mod.rs
+index 765e561..cc16bdc 100644
+--- a/willow25/src/paths/mod.rs
++++ b/willow25/src/paths/mod.rs
+@@ -40,7 +40,8 @@ pub use codec::*;
+ 
+ pub mod private_context;
+ 
+-use crate::prelude::*;
++use crate::{MCC, MCL, MPL};
++use willow_data_model::prelude::{PathError, PathFromComponentsError};
+ 
+ pub use crate::component;
+ pub use crate::path;
 diff --git a/willow25/src/storage/persistent_store.rs b/willow25/src/storage/persistent_store.rs
 index db8e4d3..1bda1c1 100644
 --- a/willow25/src/storage/persistent_store.rs

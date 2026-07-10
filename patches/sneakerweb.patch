@@ -1,5 +1,5 @@
 diff --git a/src/import.rs b/src/import.rs
-index 516aa52..6bd6001 100644
+index 516aa52..b56dbb4 100644
 --- a/src/import.rs
 +++ b/src/import.rs
 @@ -4,7 +4,13 @@ use smol::{
@@ -17,23 +17,16 @@ index 516aa52..6bd6001 100644
  use ufotofu::{
      ExpectedFinalError, ProduceAtLeastError,
      codec::{Blame, DecodeError},
-@@ -25,31 +31,70 @@ use crate::util::{SNEAKERWEB_NAMESPACE_ID_BYTES, domain_style, get_domain, hmm,
- 
- #[derive(Args)]
- pub struct ImportArgs {
--    /// The filesystem path of the .snk file to import from.
-     pub src: PathBuf,
--    /// The filtering mode to use when importing entries from the .snk file.
+@@ -31,7 +37,7 @@ pub struct ImportArgs {
      pub mode: Option<ImportMode>,
  }
  
 -#[derive(Clone, ValueEnum, Default)]
 +#[derive(Clone, Debug, ValueEnum, Default)]
  pub enum ImportMode {
--    /// Import everything from the .snk file which you have not explicitly blocked. This is the default behaviour.
+     /// Import everything from the .snk file which you have not explicitly blocked. This is the default behaviour.
      #[default]
-     All,
--    /// Import only entries from the .snk file which correspond to domains you have already stored.
+@@ -40,13 +46,54 @@ pub enum ImportMode {
      Familiar,
  }
  
@@ -90,14 +83,8 @@ index 516aa52..6bd6001 100644
 +    let namespace_id = NamespaceId::from_bytes(&SNEAKERWEB_NAMESPACE_ID_BYTES);
  
      let allowed = match args.mode.clone().unwrap_or_default() {
--        ImportMode::All => None,
-+        ImportMode::All => {
-+            None
-+        }
-         ImportMode::Familiar => {
-             let mut allowed = BTreeSet::new();
-             store
-@@ -86,6 +131,9 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
+         ImportMode::All => None,
+@@ -86,6 +133,9 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
  
      let mut skipped = BTreeSet::new();
  
@@ -107,7 +94,7 @@ index 516aa52..6bd6001 100644
      let mut filtering_decoder =
          ClosureProducer::<_, (DropSliceMetadata, SliceStreamProducer<_>), (), Error>::new(
              async || {
-@@ -96,14 +144,21 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
+@@ -96,14 +146,21 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
                          return Ok(Right(()));
                      };
  
@@ -130,7 +117,7 @@ index 516aa52..6bd6001 100644
                                      return Ok(Left((metadata, slice_stream)));
                                  }
                                  skip_reason = "unfamiliar";
-@@ -121,9 +176,10 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
+@@ -121,9 +178,10 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
  
                      skipped.insert(domain_id.clone());
  
@@ -142,7 +129,7 @@ index 516aa52..6bd6001 100644
                                  "an entry in the .snk file was too large for this device",
                              )?,
                          )
-@@ -132,6 +188,8 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
+@@ -132,6 +190,8 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
                              Ok(()) => anyhow!("unexpected end of .snk file"),
                              Err(err) => map_decode_err(err),
                          })?;
@@ -151,7 +138,7 @@ index 516aa52..6bd6001 100644
                      slice_stream
                          .produce_final()
                          .await
-@@ -145,32 +203,42 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
+@@ -145,7 +205,9 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
              },
          );
  
@@ -160,61 +147,21 @@ index 516aa52..6bd6001 100644
 +
 +    import_drop(store, &mut filtering_decoder, true)
          .await
--        .map_err(|err| match err {
--            ImportDropError::SliceStreamBytesMismatch => {
--                anyhow!("an entry in the .snk file had incorrect metadata")
--            }
--            ImportDropError::ImportProducerError(err) => err,
--            ImportDropError::SliceProducerError(err) => map_decode_err(err),
--            ImportDropError::StoreError(err) => err.into(),
--            ImportDropError::VerificationError => {
--                anyhow!("an entry in the .snk file could not be verified")
--            }
--            ImportDropError::EntryDeleted => {
--                anyhow!("an entry was deleted concurrently with being imported")
--            }
--            ImportDropError::ArchitectureTooSmall => {
--                anyhow!("an entry in the .snk file was too large for this device")
--            }
--            ImportDropError::PartialPayloadSliceEncountered => {
--                unreachable!("we are not treating incompatible slices as fatal errors")
-+        .map_err(|err| {
-+            match err {
-+                ImportDropError::SliceStreamBytesMismatch => {
-+                    anyhow!("an entry in the .snk file had incorrect metadata")
-+                }
-+                ImportDropError::ImportProducerError(err) => err,
-+                ImportDropError::SliceProducerError(err) => map_decode_err(err),
-+                ImportDropError::StoreError(err) => err.into(),
-+                ImportDropError::VerificationError => {
-+                    anyhow!("an entry in the .snk file could not be verified")
-+                }
-+                ImportDropError::EntryDeleted => {
-+                    anyhow!("an entry was deleted concurrently with being imported")
-+                }
-+                ImportDropError::ArchitectureTooSmall => {
-+                    anyhow!("an entry in the .snk file was too large for this device")
-+                }
-+                ImportDropError::PartialPayloadSliceEncountered => {
-+                    unreachable!("we are not treating incompatible slices as fatal errors")
-+                }
-             }
+         .map_err(|err| match err {
+             ImportDropError::SliceStreamBytesMismatch => {
+@@ -169,7 +231,11 @@ pub async fn import_sneak(args: &ImportArgs) -> Result<()> {
          })?;
  
      match store.flush().await {
 -        Ok(_) => Ok(()),
--        Err(_) => bail!("failed to flush changes to the sneakerweb store"),
 +        Ok(_) => {
 +            progress.phase.store(PHASE_DONE, Ordering::Relaxed);
 +            progress.processed_bytes.store(file_size, Ordering::Relaxed);
 +            Ok(())
 +        }
-+        Err(_) => {
-+            bail!("failed to flush changes to the sneakerweb store")
-+        }
+         Err(_) => bail!("failed to flush changes to the sneakerweb store"),
      }
  }
- 
 diff --git a/src/lib.rs b/src/lib.rs
 new file mode 100644
 index 0000000..8cd4489
@@ -259,17 +206,17 @@ index 8dddd90..f29230f 100644
                          Err(err) => oh_no(&format!("{}", err)).await,
                      }
 diff --git a/src/serve.rs b/src/serve.rs
-index fd4597a..f258c94 100644
+index fd4597a..964cca9 100644
 --- a/src/serve.rs
 +++ b/src/serve.rs
-@@ -37,12 +37,12 @@ use crate::util::sneakerweb_dir;
+@@ -37,12 +37,13 @@ use crate::util::sneakerweb_dir;
  use crate::util::yay;
  use crate::util::{SNEAKERWEB_NAMESPACE_ID_BYTES, get_domain};
  
 -pub async fn start_server() -> Result<()> {
--    // Okay so I started with the tutorial at the end of the Rust book, okay? Got a problem?
--    let listener = TcpListener::bind("0.0.0.0:1312").await.context("failed to bind port 1312 to serve the sneakerweb. Is it in use, or do you need to set permissions?")?;
 +pub async fn start_server(port: u16, secret: &str) -> Result<()> {
+     // Okay so I started with the tutorial at the end of the Rust book, okay? Got a problem?
+-    let listener = TcpListener::bind("0.0.0.0:1312").await.context("failed to bind port 1312 to serve the sneakerweb. Is it in use, or do you need to set permissions?")?;
 +    let addr = format!("127.0.0.1:{port}");
 +    let listener = TcpListener::bind(&addr).await.context(format!("failed to bind {addr} to serve the sneakerweb. Is it in use, or do you need to set permissions?"))?;
      yay(&format!(
@@ -279,20 +226,16 @@ index fd4597a..f258c94 100644
      ))
      .await;
  
-@@ -50,11 +50,8 @@ pub async fn start_server() -> Result<()> {
+@@ -50,7 +51,7 @@ pub async fn start_server() -> Result<()> {
  
      while let Some(stream) = incoming.next().await {
          let mut stream = stream?;
 -        match handle_connection(stream.clone()).await {
 +        match handle_connection(stream.clone(), port, secret).await {
              Err(err) => {
--                // TODO: There are kinds of problem which we might have which are not well described
--                // by 404 errors. I am going to stick my fingers in my ears and ignore them until things
--                // work a little better.
-                 stream
-                     .write_all(format!("HTTP/1.1 404 NOT FOUND\r\n\r\n{err}\r\n").as_bytes())
-                     .await?;
-@@ -66,7 +63,7 @@ pub async fn start_server() -> Result<()> {
+                 // TODO: There are kinds of problem which we might have which are not well described
+                 // by 404 errors. I am going to stick my fingers in my ears and ignore them until things
+@@ -66,7 +67,7 @@ pub async fn start_server() -> Result<()> {
      Ok(())
  }
  
@@ -301,7 +244,7 @@ index fd4597a..f258c94 100644
      Domain,
      Newest,
      Oldest,
-@@ -80,7 +77,7 @@ enum Domain {
+@@ -80,7 +81,7 @@ enum Domain {
  
  const FRONT_CSS: &str = include_str!("frontpage.css");
  
@@ -310,16 +253,10 @@ index fd4597a..f258c94 100644
      let mut buf_reader = BufReader::new(stream.clone());
      let mut headers = [httparse::EMPTY_HEADER; 64];
      let mut req = httparse::Request::new(&mut headers);
-@@ -89,19 +86,29 @@ async fn handle_connection(stream: TcpStream) -> Result<()> {
+@@ -96,12 +97,29 @@ async fn handle_connection(stream: TcpStream) -> Result<()> {
+     // or <b16subspaceid>.localhost
+     // We should error on anything else!
  
-     req.parse(buf_reader.buffer())?;
- 
--    // Any request to *.localhost ends up here
--    // which means that someone could do *.*.localhost
--    // but we are expecting EITHER
--    // sneakerweb.localhost
--    // or <b16subspaceid>.localhost
--    // We should error on anything else!
 +    let mut authorized = secret.is_empty();
 +    for header in &*req.headers {
 +        if header.name == "X-Walky6-Token" {
@@ -334,7 +271,7 @@ index fd4597a..f258c94 100644
 +    if !authorized {
 +        return Ok(());
 +    }
- 
++
      let mut domain = Domain::Homepage(FrontPageOrder::Domain);
      let mut parsed_hostname = false;
  
@@ -347,7 +284,7 @@ index fd4597a..f258c94 100644
          if header.name == "Host" {
              let hostname_str = std::str::from_utf8(header.value).unwrap();
  
-@@ -119,19 +126,11 @@ async fn handle_connection(stream: TcpStream) -> Result<()> {
+@@ -119,19 +137,12 @@ async fn handle_connection(stream: TcpStream) -> Result<()> {
                  hostname = host_fst.to_string();
              } else if host_fst != "sneakerweb" {
                  bail!("hostname {} wasn't a Subspace ID or the homepage", host_fst)
@@ -361,7 +298,7 @@ index fd4597a..f258c94 100644
              }
  
              let tld = host_iterator.next();
--            // TODO: Perhaps something nicer for accounting for the port number in the domain?
+             // TODO: Perhaps something nicer for accounting for the port number in the domain?
 -            let Some("localhost:1312") = tld else {
 -                bail!("TLD {tld:?} was not .localhost:1312")
 +            if tld != Some(&expected_tld) {
@@ -369,15 +306,7 @@ index fd4597a..f258c94 100644
              };
  
              if let Some(_whatever) = host_iterator.next() {
-@@ -140,17 +139,26 @@ async fn handle_connection(stream: TcpStream) -> Result<()> {
- 
-             parsed_hostname = true;
-         }
--
--        // What other header should we consider?
-     }
- 
-     if !parsed_hostname {
+@@ -148,9 +159,20 @@ async fn handle_connection(stream: TcpStream) -> Result<()> {
          bail!("did not find a Host header in the request")
      }
  
@@ -399,7 +328,7 @@ index fd4597a..f258c94 100644
      if let Some(path) = req.path {
          url_to_parse.push_str(path);
      }
-@@ -302,11 +310,11 @@ async fn handle_connection(stream: TcpStream) -> Result<()> {
+@@ -302,11 +324,11 @@ async fn handle_connection(stream: TcpStream) -> Result<()> {
      }
  }
  
@@ -416,7 +345,7 @@ index fd4597a..f258c94 100644
  }
  
  impl DomainListing {
-@@ -335,19 +343,19 @@ impl DomainListing {
+@@ -335,19 +357,19 @@ impl DomainListing {
          }
      }
  
@@ -441,7 +370,7 @@ index fd4597a..f258c94 100644
          let fmt = Formatter::new(
              self.last_updated.into(),
              Format::from_str("%Y-%m-%d").unwrap(),
-@@ -379,7 +387,7 @@ impl Renderable for DomainListing {
+@@ -379,7 +401,7 @@ impl Renderable for DomainListing {
              Some(url) => {
                  rsx! {
                      <li>
@@ -450,7 +379,7 @@ index fd4597a..f258c94 100644
                          (SiteMetadata { listing: self })
                      </li>
                  }
-@@ -403,7 +411,7 @@ impl Renderable for DomainListing {
+@@ -403,7 +425,7 @@ impl Renderable for DomainListing {
      }
  }
  
@@ -459,7 +388,7 @@ index fd4597a..f258c94 100644
      store: &mut PersistentStore,
      order: FrontPageOrder,
      buffer: &mut Buffer,
-@@ -528,3 +536,102 @@ async fn render_frontpage(
+@@ -528,3 +550,102 @@ async fn render_frontpage(
  
      Ok(())
  }
